@@ -255,7 +255,8 @@ namespace CollarCali
             label.raycastTarget = false;
             label.horizontalOverflow = HorizontalWrapMode.Overflow;
             label.verticalOverflow = VerticalWrapMode.Overflow;
-            label.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            // Body face: marker labels are small distance readouts, not headings.
+            label.font = GameFontSet.LegacyBodyOrDefault();
 
             return new Marker { Root = root, Dot = dot, Label = label };
         }

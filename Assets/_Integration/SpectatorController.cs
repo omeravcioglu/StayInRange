@@ -222,7 +222,8 @@ namespace CollarCali
             _label.horizontalOverflow = HorizontalWrapMode.Overflow;
             _label.verticalOverflow = VerticalWrapMode.Overflow;
             _label.raycastTarget = false;
-            _label.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            // Body face: this label sits at the bottom of the screen and has to stay readable.
+            _label.font = GameFontSet.LegacyBodyOrDefault();
         }
 
         void UpdateLabel()

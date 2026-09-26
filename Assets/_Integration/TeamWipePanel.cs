@@ -152,10 +152,10 @@ namespace CollarCali
 
         static Font BuiltinFont()
         {
-            var font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
-            if (font == null)
-                font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-            return font;
+            // YOU DIED is the loudest text in the game, so it gets the display face.
+            // Falls back to Unity's built-in font when the font set has not been built,
+            // so a missing set costs styling rather than legibility.
+            return GameFontSet.LegacyDisplayOrDefault();
         }
 
         static RectTransform CreateChild(string name, Transform parent)

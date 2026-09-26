@@ -136,10 +136,10 @@ namespace CollarCali
 
         static Font BuiltinFont()
         {
-            var font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
-            if (font == null)
-                font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-            return font;
+            // The grabbed overlay is a scare beat, so it gets the display face too.
+            // Falls back to Unity's built-in font when the font set has not been built,
+            // so a missing set costs styling rather than legibility.
+            return GameFontSet.LegacyDisplayOrDefault();
         }
 
         static RectTransform CreateChild(string name, Transform parent)
