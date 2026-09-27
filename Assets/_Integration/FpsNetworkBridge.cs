@@ -210,15 +210,16 @@ namespace CollarCali
             if (HasStateAuthority)
             {
                 ColorIndex = ReadMenuColorIndex();
-                CharacterIndex = ReadSelectedCharacterIndex();
+                // One shared body for everyone: the skin follows the colour.
+                CharacterIndex = ColorIndex;
                 EnableLocalGameplay();
                 HookShootEvents(true);
                 EnsureDualPlayer();
                 EnsureLocalFlashlight();
                 EnsureTelekinesis();
                 // Steve exists now (EnsureDualPlayer builds it), so dress both the body others see
-                // and the owner's own third-person mesh in the chosen skin.
-                ApplyCharacterSkin(CharacterIndex);
+                // and the owner's own third-person mesh in this player's colour.
+                ApplyIdentity();
                 if (_cowsinsStats != null)
                 {
                     SyncedHealth = _cowsinsStats.Health;
@@ -243,7 +244,7 @@ namespace CollarCali
             {
                 ConfigureProxy();
                 _lastSeenFireSeq = FireSeq;
-                ApplyCharacterSkin(CharacterIndex);
+                ApplyIdentity();
                 // #region agent log
                 AgentDebugLog.Write("F", "FpsNetworkBridge.Spawned", "remote_proxy",
                     "{\"colorIndex\":" + ColorIndex + "}");
@@ -759,7 +760,8 @@ namespace CollarCali
         public void RPC_AssignColor(int index)
         {
             ColorIndex = Mathf.Clamp(index, 0, PlayerColorPalette.Count - 1);
-            ApplyColorTint(ColorIndex);
+            CharacterIndex = ColorIndex;
+            ApplyIdentity();
         }
 
         [Rpc(RpcSources.All, RpcTargets.StateAuthority)]
@@ -889,8 +891,9 @@ namespace CollarCali
             if (thirdPerson && _dual != null && _dual.SteveRoot != null)
             {
                 // Steve only wakes up on the first switch to third person; make sure its mesh is
-                // wearing the chosen skin the moment the owner can see it.
-                CharacterSelection.Apply(_dual.SteveRoot, CharacterIndex);
+                // in this player's colour the moment the owner can see it.
+                _appliedCharacterIndex = int.MinValue;
+                ApplyIdentity();
                 EnterMalbersThirdPerson(_dual.SteveRoot.transform);
             }
             else
@@ -920,19 +923,22 @@ namespace CollarCali
         }
 
         /// <summary>
-        /// The skin picked in the lobby, saved locally in PlayerPrefs and read back the instant this
-        /// player spawns into Game. Clamped to the skin library so a stale save can never point past
-        /// the end of the list.
+        /// Everyone wears the one shared body in their own colour. The skin library holds that body
+        /// once per player colour (Tools/CollarCali/Build Shared Body), so the skin is simply the
+        /// colour index. With an older library of fewer skins, the first is worn and painted with
+        /// the colour instead.
         /// </summary>
-        static int ReadSelectedCharacterIndex()
+        void ApplyIdentity()
         {
             var lib = CharacterSkinLibrary.Load();
-            int raw = CharacterSelection.SelectedIndex;
-            return lib != null ? lib.ClampIndex(raw) : Mathf.Max(0, raw);
+            bool perColour = lib != null && lib.Count >= PlayerColorPalette.Count;
+            ApplyCharacterSkin(perColour ? ColorIndex : 0);
+            if (!perColour)
+                ApplyColorTint(ColorIndex);
         }
 
         /// <summary>
-        /// Dresses this player in the chosen skin on whatever visuals exist on this machine: always
+        /// Dresses this player in a skin on whatever visuals exist on this machine: always
         /// the third-person "Player Render" body every other player sees, plus the owner's Malbers
         /// Steve mesh so first- and third-person stay the same character. Idempotent - skipped when
         /// the skin has not changed - so it is safe to call every time the networked index replicates.
@@ -955,18 +961,16 @@ namespace CollarCali
         }
 
         /// <summary>
-        /// Dresses and paints this player on every machine. Compared against what is applied rather
-        /// than read off the change detector alone: a proxy never sees its first values as a change,
-        /// so its body would otherwise keep the default look. Both calls return at once when nothing
-        /// moved.
+        /// Keeps every machine's copy of this player in their current colour - the master can move
+        /// a colour after spawn (TeamDistanceManager.EnsureUniqueColors). Compared against what is
+        /// applied, so it returns at once when nothing moved.
         /// </summary>
         void DetectIdentityChanges()
         {
             if (_identityChanges == null)
                 return;
 
-            ApplyCharacterSkin(CharacterIndex);
-            ApplyColorTint(ColorIndex);
+            ApplyIdentity();
         }
 
         /// <summary>

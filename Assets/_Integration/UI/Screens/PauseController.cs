@@ -23,8 +23,10 @@ namespace CollarCali.UI
         Canvas _backCanvas;
         Canvas _frontCanvas;
         PauseMenuView _view;
+        SettingsView _settings;
         InputAction _toggle;
         bool _open;
+        int _settingsClosedFrame = -1;
 
         public bool IsOpen => _open;
 
@@ -45,7 +47,9 @@ namespace CollarCali.UI
             _backCanvas = UiKit.CreateCanvas("Pause Back", UiLayers.HudFx + 20, parent: transform);
             _frontCanvas = UiKit.CreateCanvas("Pause", UiLayers.Screens, interactive: true, parent: transform);
             _view = PauseMenuView.Create(_backCanvas.transform, _frontCanvas.transform);
-            _view.SetSettingsAvailable(false);
+            _settings = SettingsView.Create(_frontCanvas.transform, overGame: true);
+            _settings.Back += CloseSettings;
+            _view.Settings += OpenSettings;
             _view.Resume += Resume;
             _view.Leave += LeaveMatch;
             _view.Exit += ExitToDesktop;
@@ -81,8 +85,30 @@ namespace CollarCali.UI
                 return;
             }
 
+            // Settings keep Escape for themselves (back, or cancelling a rebind) - including the frame
+            // they closed on, so one press never goes back twice.
+            if (_settings.IsVisible || _settingsClosedFrame == Time.frameCount)
+                return;
             if (_toggle.WasPressedThisFrame())
                 SetOpen(!_open, relockCursor: true);
+        }
+
+        void OpenSettings()
+        {
+            if (!_open)
+                return;
+            _view.Hide();
+            _settings.Show();
+        }
+
+        void CloseSettings()
+        {
+            _settings.Hide();
+            _settingsClosedFrame = Time.frameCount;
+            if (!_open)
+                return;
+            _view.Show();
+            _view.SelectSettings();
         }
 
         void LateUpdate()
@@ -102,7 +128,7 @@ namespace CollarCali.UI
                 dual.SetMenuOpen(true);
 
             // A click on empty space drops the selection; the keys and a gamepad need one to move from.
-            if (_view.LostFocus())
+            if (!_settings.IsVisible && _view.LostFocus())
                 _view.SelectFirst();
         }
 
@@ -133,6 +159,8 @@ namespace CollarCali.UI
             }
 
             _view.Hide();
+            if (_settings.IsVisible)
+                _settings.Hide();
             if (dual != null)
                 dual.SetMenuOpen(false);
 

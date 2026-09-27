@@ -26,6 +26,9 @@ namespace CollarCali.UI.EditorTools
             new Vector2Int(1920, 1080),
             // The brief's floor: everything must still read at 720p.
             new Vector2Int(1280, 720),
+            // Off 16:9 both ways - an ultrawide, and a squarer screen (or a docked Game view).
+            new Vector2Int(2560, 1080),
+            new Vector2Int(1440, 1080),
         };
 
         [MenuItem("Tools/CollarCali/UI/Capture Gallery")]
@@ -83,8 +86,8 @@ namespace CollarCali.UI.EditorTools
             canvas.worldCamera = camera;
             canvas.planeDistance = 1f;
 
-            // The same scale ScaleWithScreenSize would pick at match 0.5, set directly so the capture
-            // does not depend on how the canvas reads a render texture's size.
+            // The same scale the game's canvases pick (ScaleWithScreenSize, Expand), set directly so
+            // the capture does not depend on how the canvas reads a render texture's size.
             var scaler = canvasObject.AddComponent<CanvasScaler>();
             scaler.uiScaleMode = CanvasScaler.ScaleMode.ConstantPixelSize;
             scaler.scaleFactor = ScaleFor(size);
@@ -123,12 +126,10 @@ namespace CollarCali.UI.EditorTools
             }
         }
 
-        /// <summary>CanvasScaler's ScaleWithScreenSize maths at match 0.5.</summary>
+        /// <summary>CanvasScaler's ScaleWithScreenSize maths in Expand mode: the reference always fits.</summary>
         static float ScaleFor(Vector2Int size)
         {
-            float logWidth = Mathf.Log(size.x / UiKit.ReferenceResolution.x, 2f);
-            float logHeight = Mathf.Log(size.y / UiKit.ReferenceResolution.y, 2f);
-            return Mathf.Pow(2f, Mathf.Lerp(logWidth, logHeight, 0.5f));
+            return Mathf.Min(size.x / UiKit.ReferenceResolution.x, size.y / UiKit.ReferenceResolution.y);
         }
 
         static void SetLayer(Transform root, int layer)

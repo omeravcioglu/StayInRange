@@ -36,6 +36,7 @@ namespace CollarCali.UI
         Canvas _canvas;
         MainMenuView _main;
         RoomBrowserView _rooms;
+        SettingsView _settings;
         State _state;
         float _stateAt;
         bool _verifying;
@@ -72,9 +73,12 @@ namespace CollarCali.UI
             _main = MainMenuView.Create(_canvas.transform);
             _rooms = RoomBrowserView.Create(_canvas.transform);
 
+            _settings = SettingsView.Create(_canvas.transform, overGame: false);
+            _settings.Back += CloseSettings;
+
             _main.Enter += OnEnter;
             _main.Exit += OnExit;
-            _main.SetSettingsAvailable(false);
+            _main.Settings += OpenSettings;
 
             _rooms.Join += OnJoin;
             _rooms.JoinWithPassword += OnJoinWithPassword;
@@ -132,6 +136,8 @@ namespace CollarCali.UI
         {
             _state = state;
             _stateAt = Time.unscaledTime;
+            if (_settings.IsVisible)
+                _settings.Hide();
 
             bool title = state == State.Title || state == State.Connecting;
             _main.SetVisible(title);
@@ -234,6 +240,23 @@ namespace CollarCali.UI
             var director = SessionDirector.Instance;
             if (director != null && director.HasSessionList)
                 OnSessions(director.Sessions);
+        }
+
+        void OpenSettings()
+        {
+            if (_state != State.Title)
+                return;
+            _main.SetVisible(false);
+            _settings.Show();
+        }
+
+        void CloseSettings()
+        {
+            _settings.Hide();
+            if (_state != State.Title)
+                return;
+            _main.SetVisible(true);
+            _main.FocusSettings();
         }
 
         void OnExit()

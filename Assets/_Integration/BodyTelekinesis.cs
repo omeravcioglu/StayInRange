@@ -706,7 +706,9 @@ namespace CollarCali
         void EnsureInput()
         {
             var bindings = PlayerTuning.Active.input;
-            string key = bindings.interactBinding + "|" + bindings.throwReadyBinding + "|" +
+            // Interact is whatever key interacts everywhere else, rebound in settings or not.
+            string interactBinding = GameSettings.KeyPath("Interacting") ?? bindings.interactBinding;
+            string key = interactBinding + "|" + bindings.throwReadyBinding + "|" +
                          bindings.chargeBinding + "|" + bindings.cancelBinding;
             if (key == _bindingsKey && _interact != null)
             {
@@ -721,7 +723,7 @@ namespace CollarCali
             _charge?.Dispose();
             _cancel?.Dispose();
 
-            _interact = new InputAction("Telekinesis Interact", InputActionType.Button, bindings.interactBinding);
+            _interact = new InputAction("Telekinesis Interact", InputActionType.Button, interactBinding);
             _throwReady = new InputAction("Telekinesis Throw Ready", InputActionType.Button, bindings.throwReadyBinding);
             _charge = new InputAction("Telekinesis Charge", InputActionType.Button, bindings.chargeBinding);
             _cancel = new InputAction("Telekinesis Cancel", InputActionType.Button, bindings.cancelBinding);

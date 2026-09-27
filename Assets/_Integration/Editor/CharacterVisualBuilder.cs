@@ -26,6 +26,11 @@ namespace CollarCali.EditorTools
     /// by the per-player colour tint that FpsNetworkBridge already applies. The old Meshy model and
     /// the Character 1-4 prefabs are left on disk, unreferenced, so this is reversible by putting the
     /// old guid back.
+    ///
+    /// NOTE (2026-09-27): the game currently wears the Meshy body as ONE shared body in the four
+    /// player colours - Tools ▸ CollarCali ▸ Build Shared Body writes the skin library for that.
+    /// Running this builder replaces that library with a single skin and swaps the body models;
+    /// FpsNetworkBridge.ApplyIdentity then falls back to painting skin 0 with the player colour.
     /// </summary>
     public static class CharacterVisualBuilder
     {

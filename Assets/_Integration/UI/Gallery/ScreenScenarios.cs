@@ -10,6 +10,9 @@ namespace CollarCali.UI
         {
             list.Add(new UiScenarios.Scenario("13-main-menu", MainMenu));
             list.Add(new UiScenarios.Scenario("15-rooms", Rooms));
+            list.Add(new UiScenarios.Scenario("18-settings-video", page => Settings(page, 0)));
+            list.Add(new UiScenarios.Scenario("18-settings-sound", page => Settings(page, 1)));
+            list.Add(new UiScenarios.Scenario("22-settings-controls", page => Settings(page, 2)));
             list.Add(new UiScenarios.Scenario("19-lobby-host", LobbyHost));
             list.Add(new UiScenarios.Scenario("20-lobby-guest", LobbyGuest));
             list.Add(new UiScenarios.Scenario("21-pause", Pause));
@@ -20,7 +23,6 @@ namespace CollarCali.UI
             var view = MainMenuView.Create(page);
             view.PlayerName = "NIBS";
             view.Region = 2;
-            view.SetSettingsAvailable(false);
             view.FocusDefault();
         }
 
@@ -36,6 +38,16 @@ namespace CollarCali.UI
             });
             view.PreviewFocus("Ward Six");
             view.PreviewPassword("Crypt", "hunter", wrong: false);
+        }
+
+        /// <summary>Settings as the menu opens them; CONTROLS with a key listening, as board 22 draws it.</summary>
+        static void Settings(RectTransform page, int tab)
+        {
+            var view = SettingsView.Create(page, overGame: false);
+            view.Show(tab);
+            view.PreviewFocus(tab);
+            if (tab == 2)
+                view.PreviewListening("Interact");
         }
 
         static LobbyRowData Player(string name, int colour, LobbySlot status, bool you = false)
@@ -94,7 +106,6 @@ namespace CollarCali.UI
             });
 
             var view = PauseMenuView.Create(back, front);
-            view.SetSettingsAvailable(false);
             view.Show(instant: true);
         }
     }

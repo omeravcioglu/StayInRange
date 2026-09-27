@@ -142,6 +142,14 @@ namespace CollarCali.UI
                 _resume.ForceFocus(true);
         }
 
+        /// <summary>Back from settings: the focus returns to SETTINGS.</summary>
+        public void SelectSettings()
+        {
+            var events = EventSystem.current;
+            if (events != null)
+                events.SetSelectedGameObject(_settings.gameObject);
+        }
+
         /// <summary>True when nothing in the menu holds the focus - the mouse clicked empty space.</summary>
         public bool LostFocus()
         {

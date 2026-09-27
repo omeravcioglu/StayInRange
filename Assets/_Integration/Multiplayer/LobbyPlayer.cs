@@ -21,9 +21,7 @@ namespace CollarCali
         [Networked] public NetworkBool IsHost { get; set; }
 
         /// <summary>
-        /// The character skin this player picked in the lobby. Replicated so every client can show
-        /// each other's choice in the roster, and read straight from the local PlayerPrefs selection
-        /// so it matches what FpsNetworkBridge will spawn with in Game.
+        /// Kept equal to ColorIndex: everyone wears the one shared body, in their colour.
         /// </summary>
         [Networked] public int CharacterIndex { get; set; }
 
@@ -70,8 +68,8 @@ namespace CollarCali
             // before the player touches the selector.
             if (Object.HasStateAuthority)
             {
-                CharacterIndex = CharacterSelection.SelectedIndex;
                 ColorIndex = PlayerColorPalette.SavedChoice;
+                CharacterIndex = ColorIndex;
             }
 
             if (!_hooked)
@@ -137,17 +135,6 @@ namespace CollarCali
         public void ToggleReady() => SetReady(!IsReady);
 
         /// <summary>
-        /// Local player commits a character pick: writes it to the networked record (so others see it)
-        /// and to PlayerPrefs (so it carries into Game when the match starts).
-        /// </summary>
-        public void SetCharacter(int index)
-        {
-            CharacterSelection.SelectedIndex = index;
-            if (Object != null && Object.HasStateAuthority)
-                CharacterIndex = CharacterSelection.SelectedIndex;
-        }
-
-        /// <summary>
         /// Local player picks a colour: networked so the roster and everyone's picker show it, and
         /// saved locally so the match spawns this player in it.
         /// </summary>
@@ -157,6 +144,7 @@ namespace CollarCali
                 return;
             int clamped = Mathf.Clamp(index, 0, PlayerColorPalette.Count - 1);
             ColorIndex = clamped;
+            CharacterIndex = clamped;
             PlayerColorPalette.SavedChoice = clamped;
         }
 

@@ -37,11 +37,14 @@ namespace CollarCali.UI
             return list;
         }
 
-        /// <summary>A 1920x1080 page centred in its parent, on the dark ground the design's sheets use.</summary>
+        /// <summary>
+        /// A page covering the whole canvas, as the game's screens do, on the dark ground the
+        /// design's sheets use - so a capture off 16:9 shows what really happens at the edges.
+        /// </summary>
         public static RectTransform CreatePage(Transform parent)
         {
             var page = UiKit.CreateRect("Page", parent);
-            page.Place(new Vector2(0.5f, 0.5f), Vector2.zero, UiKit.ReferenceResolution);
+            page.Fill();
 
             var ground = UiKit.CreateImage(page, "Ground", UiSprites.White, UiTheme.Rgb(0x0E1213));
             ground.rectTransform.Fill();

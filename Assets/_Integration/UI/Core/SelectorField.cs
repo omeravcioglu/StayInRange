@@ -93,6 +93,20 @@ namespace CollarCali.UI
             rect.sizeDelta = new Vector2(20f, 32f);
         }
 
+        /// <summary>Swaps the choices (the screen sizes on offer, say) and shows <paramref name="selected"/>.</summary>
+        public void SetChoices(string[] choices, int selected)
+        {
+            _choices = choices ?? Array.Empty<string>();
+            SetSelected(Mathf.Max(0, selected), notify: false);
+        }
+
+        /// <summary>For gallery pages: the focused look without an event system.</summary>
+        public void ShowFocused(bool focused)
+        {
+            _focused = focused;
+            Refresh();
+        }
+
         public void SetSelected(int index, bool notify = true)
         {
             if (_choices.Length == 0)

@@ -80,6 +80,14 @@ namespace CollarCali.UI
 
         public void SetSettingsAvailable(bool available) => _settings.Interactable = available;
 
+        /// <summary>Back from settings: the focus returns to where the player left.</summary>
+        public void FocusSettings()
+        {
+            var events = EventSystem.current;
+            if (events != null)
+                events.SetSelectedGameObject(_settings.gameObject);
+        }
+
         /// <summary>The name is the only thing that can be wrong here.</summary>
         public void ShowNameError(string message)
         {

@@ -77,6 +77,9 @@ namespace CollarCali.UI
             _moments = MomentDirector.Create(_local);
             // Escape: the pause menu over the running game.
             _pause = PauseController.Create(_local);
+            // Look and key settings onto whichever controller is live.
+            if (GetComponent<LocalPlayerSettings>() == null)
+                gameObject.AddComponent<LocalPlayerSettings>();
             CombatFeedback.Hit += OnHit;
             CombatFeedback.Kill += OnKill;
         }

@@ -20,8 +20,11 @@ namespace CollarCali.UI
         static Sprite _whiteFallback;
 
         /// <summary>
-        /// A screen-space canvas at the reference resolution, scaling with the screen and matching
-        /// width and height halfway - the standard every Cowsins and team canvas already used.
+        /// A screen-space canvas at the reference resolution, scaled so the whole 1920x1080 layout
+        /// always fits: on a screen wider or narrower than 16:9 the canvas grows in the spare
+        /// direction instead of cropping the other. (Matching width and height halfway, as the
+        /// vendor canvases do, took height away on a wide screen and pushed the titles at the top
+        /// off it.)
         /// </summary>
         public static Canvas CreateCanvas(string name, int sortingOrder, bool interactive = false,
             Transform parent = null)
@@ -37,7 +40,7 @@ namespace CollarCali.UI
             var scaler = go.AddComponent<CanvasScaler>();
             scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
             scaler.referenceResolution = ReferenceResolution;
-            scaler.matchWidthOrHeight = 0.5f;
+            scaler.screenMatchMode = CanvasScaler.ScreenMatchMode.Expand;
 
             // HUD canvases take no clicks, so they never steal them from a menu underneath.
             if (interactive)
