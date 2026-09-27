@@ -54,7 +54,9 @@ namespace CollarCali
                     "{\"scene\":\"" + scene.name + "\"}");
                 // #endregion
                 DisableSceneOfflinePlayers();
-                PinMalbersStaminaHud();
+                // No stamina pin in a session: the redesigned HUD (HudRoot) draws stamina itself and
+                // hides the Malbers slider. The pin also switched off every UIFollowTransform, which
+                // left the Malbers climb and interact prompts unable to follow their targets.
                 var switchOrigin = FindFpsRoot();
                 EnsureToggleSwitch(switchOrigin != null ? switchOrigin.transform.position : new Vector3(0f, 0f, -35f));
                 return;

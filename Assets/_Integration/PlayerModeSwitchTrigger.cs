@@ -47,6 +47,11 @@ namespace CollarCali
             if (dual == null)
                 return;
 
+            // Dead, or already mid-switch: the controller would refuse anyway, and returning here
+            // keeps the cooldown and the switch sound from firing for a switch that never happens.
+            if (dual.IsSuspended || dual.IsTransitioning)
+                return;
+
             if (mode == SwitchMode.Toggle)
             {
                 if (dual.IsThirdPerson)

@@ -282,7 +282,7 @@ namespace CollarCali
             if (grabbed && GetLocalHoldPoint() == null)
                 return false;
 
-            GrabbedPlayer = grabbed ? victim.Object.InputAuthority : PlayerRef.None;
+            GrabbedPlayer = grabbed ? victim.Owner : PlayerRef.None;
             victim.RPC_SetCreepGrab(Object.Id, grabbed);
             return true;
         }

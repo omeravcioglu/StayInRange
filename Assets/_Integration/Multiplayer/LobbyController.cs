@@ -1,7 +1,7 @@
 #if CMPSETUP_COMPLETE
 using System.Collections.Generic;
+using CollarCali.UI;
 using Fusion;
-using TMPro;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.SceneManagement;
@@ -43,40 +43,11 @@ namespace CollarCali
         /// </summary>
         const float RosterSyncGraceSeconds = 10f;
 
-        struct Row
-        {
-            public RectTransform Root;
-            public Image Swatch;
-            public TextMeshProUGUI Name;
-            public TextMeshProUGUI Status;
-        }
-
-        readonly List<Row> _rows = new List<Row>();
         readonly List<LobbyPlayer> _sorted = new List<LobbyPlayer>();
 
-        RectTransform _list;
-        TextMeshProUGUI _title;
-        TextMeshProUGUI _subtitle;
-        TextMeshProUGUI _hint;
-        Button _readyButton;
-        TextMeshProUGUI _readyLabel;
-        Button _startButton;
-        TextMeshProUGUI _startLabel;
-        Button _leaveButton;
-
-        // Character selector (live 3D preview rendered to a texture, cycled with arrows).
-        RawImage _previewImage;
-        TextMeshProUGUI _charName;
-        Camera _previewCamera;
-        RenderTexture _previewRt;
-        GameObject _previewModel;
-        Light _previewLight;
-        int _previewIndex;
-        bool _previewReady;
-
-        // The preview world sits far from the origin so its own little camera sees nothing but the
-        // model and its light, no matter what else the lobby scene contains.
-        static readonly Vector3 PreviewWorldOrigin = new Vector3(2000f, 2000f, 2000f);
+        LobbyView _view;
+        readonly List<LobbyRowData> _rowData = new List<LobbyRowData>();
+        readonly string[] _takenBy = new string[LobbyView.Slots];
 
         bool _spawnPending;
         bool _startIssued;
@@ -138,23 +109,12 @@ namespace CollarCali
 
         void Update()
         {
-            UpdatePreviewSpin();
-
             var runner = NetworkCombatHooks.FindRunner();
 
             if (runner == null || !runner.IsRunning)
             {
-                SetStatus("Connecting to session...");
-                if (_readyButton != null)
-                {
-                    _readyButton.gameObject.SetActive(false);
-                    _readyButton.interactable = false;
-                }
-                if (_startButton != null)
-                {
-                    _startButton.gameObject.SetActive(false);
-                    _startButton.interactable = false;
-                }
+                SetStatus("Connecting to the room…");
+                _view.SetPrimary(string.Empty, visible: false, enabled: false, note: null);
                 return;
             }
 
@@ -291,52 +251,43 @@ namespace CollarCali
             // Fusion player id is what keeps every client showing the same list in the same order.
             _sorted.Sort((a, b) => a.Owner.PlayerId.CompareTo(b.Owner.PlayerId));
 
-            while (_rows.Count < _sorted.Count)
-                _rows.Add(CreateRow(_rows.Count));
-            for (int i = _sorted.Count; i < _rows.Count; i++)
-                _rows[i].Root.gameObject.SetActive(false);
+            ResolveLocalColour();
 
             int readyCount = 0;
+            _rowData.Clear();
+            for (int i = 0; i < _takenBy.Length; i++)
+                _takenBy[i] = null;
 
             for (int i = 0; i < _sorted.Count; i++)
             {
                 var entry = _sorted[i];
-                var row = _rows[i];
-                row.Root.gameObject.SetActive(true);
-
-                // Swatch shows the chosen character's tint when the skin library is available, so the
-                // roster reflects who picked what; otherwise it falls back to a stable per-id colour.
-                var lib = CharacterSkinLibrary.Load();
-                if (lib != null && lib.Count > 0)
-                    row.Swatch.color = lib.TintOf(entry.CharacterIndex);
-                else
-                    row.Swatch.color = PlayerColorPalette.Get(
-                        entry.Owner.IsRealPlayer ? entry.Owner.PlayerId : i);
-
-                string baseName = entry.IsLocal
-                    ? entry.DisplayName + "  (you)"
-                    : entry.DisplayName;
-                row.Name.text = lib != null && lib.Count > 0
-                    ? baseName + "   -   " + lib.NameOf(entry.CharacterIndex)
-                    : baseName;
-
+                LobbySlot status;
                 if (entry.IsHost)
                 {
-                    row.Status.text = "HOST";
-                    row.Status.color = new Color(1f, 0.82f, 0.25f, 1f);
+                    status = LobbySlot.Host;
                     readyCount++;
                 }
                 else if (entry.IsReady)
                 {
-                    row.Status.text = "READY";
-                    row.Status.color = new Color(0.35f, 0.9f, 0.45f, 1f);
+                    status = LobbySlot.Ready;
                     readyCount++;
                 }
                 else
                 {
-                    row.Status.text = "NOT READY";
-                    row.Status.color = new Color(0.85f, 0.85f, 0.85f, 0.65f);
+                    status = LobbySlot.NotReady;
                 }
+
+                int colour = ColourOf(entry, i);
+                _rowData.Add(new LobbyRowData
+                {
+                    Name = entry.DisplayName,
+                    Colour = colour,
+                    IsYou = entry.IsLocal,
+                    Status = status,
+                });
+
+                if (!entry.IsLocal && colour >= 0 && colour < _takenBy.Length && _takenBy[colour] == null)
+                    _takenBy[colour] = entry.DisplayName;
             }
 
             // Master-client status is the authority for who may start, not the replicated IsHost
@@ -373,44 +324,44 @@ namespace CollarCali
             bool allReady = listed > 0 && readyCount == listed && rosterComplete;
             bool enoughPlayers = connected >= MinPlayersToStart;
 
-            _subtitle.text = ResolveRoomName(runner) + "   -   " +
-                             connected + "/" + ResolveMaxPlayers(runner) + " players";
+            int capacity = Mathf.Min(ResolveMaxPlayers(runner), LobbyView.Slots);
+            _view.SetSubtitle(ResolveRoomName(runner) + " · " + connected + "/" + ResolveMaxPlayers(runner) + " players");
+            _view.SetRoster(_rowData, capacity);
 
             if (starting)
-                SetStatus("Starting match...");
+                SetStatus("Starting the match…");
             else if (!isMaster)
-                SetStatus("Waiting for the host to start the match...");
+                SetStatus("Waiting for the host to start the match…");
             else if (!enoughPlayers)
-                SetStatus("Waiting for players to join...");
+                SetStatus("Waiting for players to join…");
             else if (!rosterSynced && !rosterStale)
-                SetStatus("Syncing players...");
+                SetStatus("Syncing players…");
             else if (rosterStale)
                 SetStatus("A player is not responding (" + listed + "/" + connected +
                           " synced). You can start without them.");
             else if (!allReady)
                 SetStatus("Waiting for everyone to ready up (" + readyCount + "/" + listed + ").");
             else
-                SetStatus("Everyone is ready. Press Start Game.");
+                SetStatus("Everyone is ready. Start when you like.");
 
             var local = LobbyPlayer.Local();
 
-            _readyButton.gameObject.SetActive(!isMaster);
-            _startButton.gameObject.SetActive(isMaster);
-
             if (!isMaster)
             {
-                _readyLabel.text = local != null && local.IsReady ? "Cancel Ready" : "Ready Up";
-                _readyButton.interactable = !starting && local != null;
+                string label = local != null && local.IsReady ? "CANCEL READY" : "READY";
+                _view.SetPrimary(label, visible: true, enabled: !starting && local != null, note: null);
             }
             else
             {
-                _startLabel.text = starting ? "Starting..." : "Start Game";
-                _startButton.interactable = !starting && allReady && enoughPlayers;
+                bool canStart = !starting && allReady && enoughPlayers;
+                string note = starting || canStart ? null
+                    : !enoughPlayers ? "waiting for players"
+                    : "not everyone is ready yet";
+                _view.SetPrimary(starting ? "STARTING…" : "START GAME", visible: true, enabled: canStart, note: note);
             }
 
-            // Deliberately always interactable: a start that fails must never strand someone in a
-            // lobby with every control greyed out.
-            _leaveButton.interactable = true;
+            int chosen = local != null && local.ColorIndex >= 0 ? local.ColorIndex : Mathf.Max(0, PlayerColorPalette.SavedChoice);
+            _view.SetColour(chosen, _takenBy);
         }
 
         static string ResolveRoomName(NetworkRunner runner)
@@ -431,6 +382,115 @@ namespace CollarCali
 
         /// <summary>-1 until the first roster refresh has run. See the arrival check in Refresh.</summary>
         int _seenConnectedCount = -1;
+
+        /// <summary>One button, two jobs: the host starts the match, everyone else readies up.</summary>
+        void OnPrimaryPressed()
+        {
+            var runner = NetworkCombatHooks.FindRunner();
+            if (runner != null && runner.IsRunning && runner.IsSharedModeMasterClient)
+                OnStartPressed();
+            else
+                OnReadyPressed();
+        }
+
+        #endregion
+
+        #region Colours
+
+        /// <summary>The colour a roster entry shows: its pick, or a stable stand-in until it has one.</summary>
+        static int ColourOf(LobbyPlayer entry, int order)
+        {
+            if (entry.ColorIndex >= 0)
+                return entry.ColorIndex % PlayerColorPalette.Count;
+            return (entry.Owner.IsRealPlayer ? entry.Owner.PlayerId : order) % PlayerColorPalette.Count;
+        }
+
+        /// <summary>
+        /// Gives the local player a colour nobody else holds: a first pick if they have none, and a
+        /// move if two players picked the same one at once - the lower player id keeps it, so both
+        /// machines agree on who moves without talking.
+        /// </summary>
+        void ResolveLocalColour()
+        {
+            var local = LobbyPlayer.Local();
+            if (local == null || _startIssued || LobbyPlayer.AnyMatchStarting())
+                return;
+
+            int mine = local.ColorIndex;
+            bool clash = false;
+            foreach (var other in _sorted)
+            {
+                if (other == null || other == local || other.ColorIndex != mine)
+                    continue;
+                if (other.Owner.PlayerId < local.Owner.PlayerId)
+                {
+                    clash = true;
+                    break;
+                }
+            }
+
+            if (mine >= 0 && mine < PlayerColorPalette.Count && !clash)
+                return;
+
+            int free = FirstFreeColour(local, mine >= 0 ? mine : Mathf.Max(0, PlayerColorPalette.SavedChoice));
+            if (free >= 0)
+                local.SetColor(free);
+        }
+
+        /// <summary>The first colour from <paramref name="start"/> on (wrapping) that no other player holds.</summary>
+        int FirstFreeColour(LobbyPlayer local, int start)
+        {
+            for (int step = 0; step < PlayerColorPalette.Count; step++)
+            {
+                int candidate = (start + step) % PlayerColorPalette.Count;
+                if (!TakenByOther(local, candidate))
+                    return candidate;
+            }
+
+            return -1;
+        }
+
+        bool TakenByOther(LobbyPlayer local, int colour)
+        {
+            foreach (var other in _sorted)
+            {
+                if (other != null && other != local && other.ColorIndex == colour)
+                    return true;
+            }
+
+            return false;
+        }
+
+        void StepColour(int direction)
+        {
+            var local = LobbyPlayer.Local();
+            if (local == null || _startIssued)
+                return;
+
+            int start = local.ColorIndex >= 0 ? local.ColorIndex : 0;
+            for (int step = 1; step <= PlayerColorPalette.Count; step++)
+            {
+                int candidate = ((start + direction * step) % PlayerColorPalette.Count + PlayerColorPalette.Count) %
+                                PlayerColorPalette.Count;
+                if (!TakenByOther(local, candidate))
+                {
+                    local.SetColor(candidate);
+                    return;
+                }
+            }
+        }
+
+        void PickColour(int colour)
+        {
+            var local = LobbyPlayer.Local();
+            if (local == null || _startIssued || TakenByOther(local, colour))
+                return;
+            local.SetColor(colour);
+        }
+
+        #endregion
+
+        #region Ready and start
 
         void OnReadyPressed()
         {
@@ -528,8 +588,8 @@ namespace CollarCali
 
         void SetStatus(string text)
         {
-            if (_hint != null)
-                _hint.text = text;
+            if (_view != null)
+                _view.SetHint(text);
         }
 
         static void EnsureCamera()
@@ -568,343 +628,28 @@ namespace CollarCali
 
         void BuildCanvas()
         {
-            var root = new GameObject("LobbyCanvas", typeof(RectTransform));
-            root.transform.SetParent(transform, false);
+            var canvas = UiKit.CreateCanvas("LobbyCanvas", UiLayers.Screens, interactive: true, parent: transform);
+            _view = LobbyView.Create(canvas.transform);
+            _view.Primary += OnPrimaryPressed;
+            _view.Leave += OnLeavePressed;
+            _view.ColourStep += StepColour;
+            _view.ColourPick += PickColour;
 
-            var canvas = root.AddComponent<Canvas>();
-            canvas.renderMode = RenderMode.ScreenSpaceOverlay;
-            canvas.sortingOrder = 100;
+            // Hover only for the primary button: its handlers play something more specific than a
+            // click, and claiming it here is what stops UiSfxAutoWire adding the generic one as well.
+            UiSfxButton.HoverOnly(_view.PrimaryButton);
 
-            var scaler = root.AddComponent<CanvasScaler>();
-            scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-            scaler.referenceResolution = new Vector2(1920f, 1080f);
-            scaler.matchWidthOrHeight = 0.5f;
-
-            root.AddComponent<GraphicRaycaster>();
-
-            var backdrop = CreateImage(root.transform, "Backdrop", new Color(0.05f, 0.06f, 0.08f, 1f));
-            Stretch(backdrop.rectTransform);
-
-            var panel = CreateImage(root.transform, "Panel", new Color(0.10f, 0.12f, 0.15f, 0.96f));
-            var panelRt = panel.rectTransform;
-            panelRt.anchorMin = new Vector2(0.5f, 0.5f);
-            panelRt.anchorMax = new Vector2(0.5f, 0.5f);
-            panelRt.pivot = new Vector2(0.5f, 0.5f);
-            panelRt.sizeDelta = new Vector2(820f, 700f);
-            panelRt.anchoredPosition = Vector2.zero;
-
-            _title = CreateText(panelRt, "Title", "LOBBY", 46f, TextAlignmentOptions.Center);
-            Anchor(_title.rectTransform, new Vector2(0.5f, 1f), Center, new Vector2(0f, -60f),
-                new Vector2(760f, 60f));
-            _title.fontStyle = FontStyles.Bold;
-
-            _subtitle = CreateText(panelRt, "Subtitle", "", 24f, TextAlignmentOptions.Center);
-            Anchor(_subtitle.rectTransform, new Vector2(0.5f, 1f), Center, new Vector2(0f, -118f),
-                new Vector2(760f, 34f));
-            _subtitle.color = new Color(1f, 1f, 1f, 0.6f);
-
-            _list = new GameObject("PlayerList", typeof(RectTransform)).GetComponent<RectTransform>();
-            _list.SetParent(panelRt, false);
-            _list.anchorMin = new Vector2(0.5f, 1f);
-            _list.anchorMax = new Vector2(0.5f, 1f);
-            _list.pivot = new Vector2(0.5f, 1f);
-            _list.anchoredPosition = new Vector2(0f, -170f);
-            _list.sizeDelta = new Vector2(720f, 360f);
-            // Rooms can hold more players than the panel has room for; clip rather than letting
-            // row seven paint over the hint and buttons.
-            _list.gameObject.AddComponent<RectMask2D>();
-
-            _hint = CreateText(panelRt, "Hint", "", 22f, TextAlignmentOptions.Center);
-            Anchor(_hint.rectTransform, new Vector2(0.5f, 0f), Center, new Vector2(0f, 150f),
-                new Vector2(760f, 34f));
-            _hint.color = new Color(1f, 1f, 1f, 0.75f);
-
-            _readyButton = CreateButton(panelRt, "ReadyButton", "Ready Up",
-                new Color(0.20f, 0.45f, 0.85f, 1f), out _readyLabel);
-            Anchor(_readyButton.GetComponent<RectTransform>(), new Vector2(0.5f, 0f), Center,
-                new Vector2(0f, 90f), new Vector2(300f, 62f));
-            _readyButton.onClick.AddListener(OnReadyPressed);
-
-            _startButton = CreateButton(panelRt, "StartButton", "Start Game",
-                new Color(0.20f, 0.62f, 0.32f, 1f), out _startLabel);
-            Anchor(_startButton.GetComponent<RectTransform>(), new Vector2(0.5f, 0f), Center,
-                new Vector2(0f, 90f), new Vector2(300f, 62f));
-            _startButton.onClick.AddListener(OnStartPressed);
-
-            // Hover only for these two: their handlers play something more specific than a click,
-            // and claiming them here is what stops UiSfxAutoWire adding the generic one as well.
-            UiSfxButton.HoverOnly(_readyButton);
-            UiSfxButton.HoverOnly(_startButton);
-
-            _leaveButton = CreateButton(panelRt, "LeaveButton", "Leave",
-                new Color(0.35f, 0.16f, 0.18f, 1f), out _);
-            Anchor(_leaveButton.GetComponent<RectTransform>(), new Vector2(0.5f, 0f), Center,
-                new Vector2(0f, 32f), new Vector2(200f, 44f));
-            _leaveButton.onClick.AddListener(OnLeavePressed);
-
-            _startButton.gameObject.SetActive(false);
-
-            BuildCharacterSelector(root.transform);
+            _view.SetColour(Mathf.Max(0, PlayerColorPalette.SavedChoice), _takenBy);
+            _view.SetPrimary(string.Empty, visible: false, enabled: false, note: null);
         }
 
-        #endregion
-
-        #region Character selector
-
-        void BuildCharacterSelector(Transform canvas)
+        void LateUpdate()
         {
-            // A standalone card to the left of the roster panel so the existing layout is untouched.
-            var card = CreateImage(canvas, "CharacterCard", new Color(0.10f, 0.12f, 0.15f, 0.96f));
-            var cardRt = card.rectTransform;
-            cardRt.anchorMin = new Vector2(0.5f, 0.5f);
-            cardRt.anchorMax = new Vector2(0.5f, 0.5f);
-            cardRt.pivot = new Vector2(1f, 0.5f);
-            // Sit just to the left of the 820-wide roster panel (410 half-width + a 20 gap).
-            cardRt.anchoredPosition = new Vector2(-430f, 0f);
-            cardRt.sizeDelta = new Vector2(360f, 620f);
-
-            var heading = CreateText(cardRt, "CharacterHeading", "CHARACTER", 26f,
-                TextAlignmentOptions.Center);
-            Anchor(heading.rectTransform, new Vector2(0.5f, 1f), Center, new Vector2(0f, -36f),
-                new Vector2(320f, 40f));
-            heading.fontStyle = FontStyles.Bold;
-
-            // Live 3D preview surface.
-            _previewImage = CreateRawImage(cardRt, "Preview");
-            Anchor(_previewImage.rectTransform, new Vector2(0.5f, 1f), Center, new Vector2(0f, -300f),
-                new Vector2(300f, 460f));
-            _previewImage.color = Color.white;
-
-            _charName = CreateText(cardRt, "CharacterName", "", 24f, TextAlignmentOptions.Center);
-            Anchor(_charName.rectTransform, new Vector2(0.5f, 0f), Center, new Vector2(0f, 118f),
-                new Vector2(320f, 40f));
-            _charName.fontStyle = FontStyles.Bold;
-
-            var prev = CreateButton(cardRt, "CharPrev", "<", new Color(0.20f, 0.45f, 0.85f, 1f), out _);
-            Anchor(prev.GetComponent<RectTransform>(), new Vector2(0.5f, 0f), Center,
-                new Vector2(-115f, 60f), new Vector2(80f, 60f));
-            prev.onClick.AddListener(() => StepCharacter(-1));
-
-            var next = CreateButton(cardRt, "CharNext", ">", new Color(0.20f, 0.45f, 0.85f, 1f), out _);
-            Anchor(next.GetComponent<RectTransform>(), new Vector2(0.5f, 0f), Center,
-                new Vector2(115f, 60f), new Vector2(80f, 60f));
-            next.onClick.AddListener(() => StepCharacter(1));
-
-            EnsurePreviewWorld();
-        }
-
-        /// <summary>
-        /// Spins up a tiny self-contained render world (camera + light + model) far from everything
-        /// else and points a RenderTexture at it. Degrades to a hidden card if the character assets
-        /// have not been built yet (Tools/CollarCali/Build Character Visuals).
-        /// </summary>
-        void EnsurePreviewWorld()
-        {
-            if (_previewReady)
-                return;
-
-            var lib = CharacterSkinLibrary.Load();
-            var modelPrefab = Resources.Load<GameObject>("CharacterPreview");
-            if (lib == null || lib.Count == 0 || modelPrefab == null)
-            {
-                // Nothing to show yet - hide the selector rather than render an empty box.
-                if (_previewImage != null)
-                    _previewImage.transform.parent.gameObject.SetActive(false);
-                return;
-            }
-
-            _previewIndex = CharacterSelection.SelectedIndex;
-
-            _previewRt = new RenderTexture(512, 780, 16, RenderTextureFormat.ARGB32)
-            {
-                name = "LobbyCharacterPreview",
-                antiAliasing = 2,
-            };
-            _previewRt.Create();
-            if (_previewImage != null)
-                _previewImage.texture = _previewRt;
-
-            var camGo = new GameObject("CharacterPreviewCamera");
-            camGo.transform.position = PreviewWorldOrigin + new Vector3(0f, 1f, 3.2f);
-            camGo.transform.rotation = Quaternion.Euler(3f, 180f, 0f);
-            _previewCamera = camGo.AddComponent<Camera>();
-            _previewCamera.targetTexture = _previewRt;
-            _previewCamera.clearFlags = CameraClearFlags.SolidColor;
-            _previewCamera.backgroundColor = new Color(0.06f, 0.07f, 0.10f, 1f);
-            _previewCamera.fieldOfView = 32f;
-            _previewCamera.nearClipPlane = 0.05f;
-            // Small far plane so nothing beyond this pocket of the scene can leak into the shot.
-            _previewCamera.farClipPlane = 12f;
-
-            var lightGo = new GameObject("CharacterPreviewLight");
-            lightGo.transform.position = PreviewWorldOrigin + new Vector3(1.5f, 3f, 2.5f);
-            lightGo.transform.rotation = Quaternion.Euler(40f, 200f, 0f);
-            _previewLight = lightGo.AddComponent<Light>();
-            _previewLight.type = LightType.Directional;
-            _previewLight.intensity = 1.15f;
-            _previewLight.cullingMask = ~0;
-
-            _previewModel = Instantiate(modelPrefab);
-            _previewModel.name = "CharacterPreviewModel";
-            _previewModel.transform.position = PreviewWorldOrigin;
-            _previewModel.transform.rotation = Quaternion.Euler(0f, 180f, 0f);
-
-            _previewReady = true;
-            SetPreviewIndex(_previewIndex);
-        }
-
-        void StepCharacter(int direction)
-        {
-            var lib = CharacterSkinLibrary.Load();
-            if (lib == null || lib.Count == 0)
-                return;
-
-            SetPreviewIndex(lib.ClampIndex(_previewIndex + direction));
-        }
-
-        void SetPreviewIndex(int index)
-        {
-            var lib = CharacterSkinLibrary.Load();
-            if (lib == null || lib.Count == 0)
-                return;
-
-            _previewIndex = lib.ClampIndex(index);
-
-            if (_previewModel != null)
-                CharacterSelection.Apply(_previewModel, _previewIndex);
-
-            if (_charName != null)
-                _charName.text = lib.NameOf(_previewIndex);
-
-            // Commit the pick: PlayerPrefs (carried into Game) + networked record (shown to others).
-            var local = LobbyPlayer.Local();
-            if (local != null)
-                local.SetCharacter(_previewIndex);
-            else
-                CharacterSelection.SelectedIndex = _previewIndex;
-        }
-
-        void UpdatePreviewSpin()
-        {
-            if (_previewModel != null)
-                _previewModel.transform.Rotate(0f, 18f * Time.unscaledDeltaTime, 0f, Space.World);
-        }
-
-        void ReleasePreview()
-        {
-            if (_previewModel != null)
-                Destroy(_previewModel);
-            if (_previewCamera != null)
-                Destroy(_previewCamera.gameObject);
-            if (_previewLight != null)
-                Destroy(_previewLight.gameObject);
-            if (_previewRt != null)
-            {
-                _previewRt.Release();
-                Destroy(_previewRt);
-            }
-
-            _previewReady = false;
-        }
-
-        void OnDestroy()
-        {
-            ReleasePreview();
-        }
-
-        static RawImage CreateRawImage(Transform parent, string name)
-        {
-            var go = new GameObject(name, typeof(RectTransform));
-            go.transform.SetParent(parent, false);
-            return go.AddComponent<RawImage>();
-        }
-
-        Row CreateRow(int index)
-        {
-            var go = new GameObject("Row" + index, typeof(RectTransform));
-            var rt = go.GetComponent<RectTransform>();
-            rt.SetParent(_list, false);
-            rt.anchorMin = new Vector2(0f, 1f);
-            rt.anchorMax = new Vector2(1f, 1f);
-            rt.pivot = new Vector2(0.5f, 1f);
-            rt.anchoredPosition = new Vector2(0f, -index * 62f);
-            rt.sizeDelta = new Vector2(0f, 54f);
-
-            var bg = go.AddComponent<Image>();
-            bg.color = new Color(1f, 1f, 1f, 0.05f);
-
-            var swatch = CreateImage(rt, "Swatch", Color.white);
-            Anchor(swatch.rectTransform, new Vector2(0f, 0.5f), Center,
-                new Vector2(34f, 0f), new Vector2(20f, 20f));
-
-            var name = CreateText(rt, "Name", "", 26f, TextAlignmentOptions.MidlineLeft);
-            Anchor(name.rectTransform, new Vector2(0f, 0.5f), new Vector2(0f, 0.5f),
-                new Vector2(64f, 0f), new Vector2(420f, 40f));
-
-            var status = CreateText(rt, "Status", "", 22f, TextAlignmentOptions.MidlineRight);
-            Anchor(status.rectTransform, new Vector2(1f, 0.5f), new Vector2(1f, 0.5f),
-                new Vector2(-30f, 0f), new Vector2(220f, 40f));
-
-            return new Row { Root = rt, Swatch = swatch, Name = name, Status = status };
-        }
-
-        static Image CreateImage(Transform parent, string name, Color color)
-        {
-            var go = new GameObject(name, typeof(RectTransform));
-            go.transform.SetParent(parent, false);
-            var image = go.AddComponent<Image>();
-            image.color = color;
-            return image;
-        }
-
-        static TextMeshProUGUI CreateText(Transform parent, string name, string text, float size,
-            TextAlignmentOptions alignment)
-        {
-            var go = new GameObject(name, typeof(RectTransform));
-            go.transform.SetParent(parent, false);
-            var label = go.AddComponent<TextMeshProUGUI>();
-            label.text = text;
-            label.fontSize = size;
-            label.alignment = alignment;
-            label.raycastTarget = false;
-            label.color = Color.white;
-            return label;
-        }
-
-        static Button CreateButton(Transform parent, string name, string text, Color color,
-            out TextMeshProUGUI label)
-        {
-            var image = CreateImage(parent, name, color);
-            var button = image.gameObject.AddComponent<Button>();
-            button.targetGraphic = image;
-
-            label = CreateText(image.rectTransform, "Label", text, 26f, TextAlignmentOptions.Center);
-            Stretch(label.rectTransform);
-            label.fontStyle = FontStyles.Bold;
-
-            return button;
-        }
-
-        static readonly Vector2 Center = new Vector2(0.5f, 0.5f);
-
-        static void Stretch(RectTransform rt)
-        {
-            rt.anchorMin = Vector2.zero;
-            rt.anchorMax = Vector2.one;
-            rt.offsetMin = Vector2.zero;
-            rt.offsetMax = Vector2.zero;
-        }
-
-        // Pivot is a parameter rather than a fixed centre because anchoredPosition is measured
-        // from the pivot: setting it afterwards silently shifts the element by half its size.
-        static void Anchor(RectTransform rt, Vector2 anchor, Vector2 pivot, Vector2 position,
-            Vector2 size)
-        {
-            rt.anchorMin = anchor;
-            rt.anchorMax = anchor;
-            rt.pivot = pivot;
-            rt.sizeDelta = size;
-            rt.anchoredPosition = position;
+            // Keys and a gamepad need a selection to move from: the primary button, whenever
+            // nothing else holds the focus and it can be pressed.
+            var events = EventSystem.current;
+            if (_view != null && events != null && events.currentSelectedGameObject == null)
+                _view.FocusDefault();
         }
 
         #endregion

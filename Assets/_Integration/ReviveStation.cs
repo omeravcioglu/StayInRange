@@ -1,4 +1,5 @@
 #if CMPSETUP_COMPLETE
+using System.Collections.Generic;
 using cowsins;
 using UnityEngine;
 
@@ -14,7 +15,8 @@ namespace CollarCali
     /// there is no station state that could get out of step between machines.
     ///
     /// It looks for a body rather than requiring one to be dropped in a precise spot, so a carrier
-    /// can walk up still holding their teammate and revive them on the spot.
+    /// can walk up still holding their teammate and revive them on the spot: while a body is held,
+    /// the carrier's telekinesis turns its drop key into a revive here (see FindFor).
     /// </summary>
     [AddComponentMenu("CollarCali/Revive Station")]
     public class ReviveStation : Interactable
@@ -40,9 +42,28 @@ namespace CollarCali
         float _nextScan;
         FpsNetworkBridge _candidate;
 
+        // Every enabled station, so the carrier's per-frame check never scans the scene.
+        static readonly List<ReviveStation> All = new List<ReviveStation>();
+
+        /// <summary>Every enabled station, for the HUD (the spectator's "18 m to go").</summary>
+        public static IReadOnlyList<ReviveStation> Active => All;
+
+        /// <summary>How close a body has to be, in metres.</summary>
+        public float BodyRange => bodyRange;
+
         void Reset()
         {
             interactText = "Revive teammate";
+        }
+
+        void OnEnable()
+        {
+            All.Add(this);
+        }
+
+        void OnDisable()
+        {
+            All.Remove(this);
         }
 
         void Update()
@@ -63,11 +84,33 @@ namespace CollarCali
             }
         }
 
+        /// <summary>A dead teammate's body is close enough to revive.</summary>
+        public bool HasBodyInRange => _candidate != null;
+
+        /// <summary>Seconds until the station can revive again; 0 when ready.</summary>
+        public float CooldownLeft => Mathf.Max(0f, _readyAt - Time.time);
+
+        /// <summary>
+        /// What the HUD prompt says for this station, in every state - including the blocked ones,
+        /// for which Cowsins never calls <see cref="Highlight"/> and would show "Not Compatible".
+        /// </summary>
+        public string PromptText
+        {
+            get
+            {
+                if (CooldownLeft > 0f)
+                    return "Recharging";
+                return _candidate != null ? "Revive " + _candidate.DisplayName : "Revive";
+            }
+        }
+
         public override void Highlight()
         {
             base.Highlight();
+            // DisplayName, like the carrier's own prompt. The input authority this used to read is
+            // None for every player in shared mode, so it never named anybody.
             interactText = _candidate != null
-                ? "Revive player " + _candidate.Object.InputAuthority.PlayerId
+                ? "Revive " + _candidate.DisplayName
                 : "Bring a body here to revive";
         }
 
@@ -79,21 +122,63 @@ namespace CollarCali
 
         public override void Interact(Transform player)
         {
-            var target = _candidate;
-            if (target == null || Time.time < _readyAt)
-                return;
+            TryRevive(_candidate, player);
+        }
+
+        /// <summary>
+        /// Revives a dead player whose body is here. The station's own prompt calls this, and so
+        /// does the carrier's telekinesis, so a body still held in the air comes back without being
+        /// put down first.
+        /// </summary>
+        public bool TryRevive(FpsNetworkBridge body, Transform player)
+        {
+            if (body == null || !body.IsDead || Time.time < _readyAt)
+                return false;
 
             _readyAt = Time.time + cooldownSeconds;
 
             // Sent to the dead player's own authority, which revives only if they are still dead.
             // Two survivors pressing at the same moment therefore produce one revive, not two.
-            target.RequestRevive(SpawnPosition(), SpawnYaw());
+            body.RequestRevive(SpawnPosition(), SpawnYaw());
 
             base.Interact(player);
 
             // A station is used many times over a level, so the one-shot latch the base class sets
             // is cleared again straight away.
             alreadyInteracted = false;
+            return true;
+        }
+
+        /// <summary>
+        /// The station a body can be revived at right now - the nearest one in range that is not
+        /// cooling down - or null. Asked every frame by whoever is holding the body.
+        /// </summary>
+        public static ReviveStation FindFor(FpsNetworkBridge body)
+        {
+            if (body == null || !body.IsDead)
+                return null;
+
+            // The body itself rather than its root: a held body is simulated on the carrier's
+            // machine, where the root trails it by a round trip to the owner and back.
+            var position = body.DownState != null ? body.DownState.BodyPosition : body.transform.position;
+
+            ReviveStation best = null;
+            float bestDistance = float.MaxValue;
+
+            foreach (var station in All)
+            {
+                if (station == null || Time.time < station._readyAt)
+                    continue;
+
+                float distance = Vector3.Distance(station.transform.position, position);
+                if (distance > station.bodyRange || distance >= bestDistance)
+                    continue;
+
+                bestDistance = distance;
+                best = station;
+            }
+
+            return best;
         }
 
         Vector3 SpawnPosition()

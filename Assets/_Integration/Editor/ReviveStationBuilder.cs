@@ -17,6 +17,7 @@ namespace CollarCali.EditorTools
     public static class ReviveStationBuilder
     {
         const string OutputPath = "Assets/_Integration/Prefabs/ReviveStation.prefab";
+        const string MaterialFolder = "Assets/_Integration/Prefabs/Materials";
 
         [MenuItem("Tools/CollarCali/Build Revive Station")]
         public static void Build()
@@ -122,6 +123,10 @@ namespace CollarCali.EditorTools
                 Object.DestroyImmediate(collider);
         }
 
+        /// <summary>
+        /// Colours a part with a material saved next to the prefab. A material made in memory and
+        /// never saved is dropped when the prefab is written, and the station renders pink.
+        /// </summary>
         static void Paint(GameObject go, Color color, bool emissive = false)
         {
             var renderer = go.GetComponent<Renderer>();
@@ -129,7 +134,19 @@ namespace CollarCali.EditorTools
                 return;
 
             var shader = Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard");
-            var material = new Material(shader) { name = go.name + "Material" };
+            var path = MaterialFolder + "/ReviveStation " + go.name + ".mat";
+            var material = AssetDatabase.LoadAssetAtPath<Material>(path);
+            if (material == null)
+            {
+                System.IO.Directory.CreateDirectory(MaterialFolder);
+                material = new Material(shader) { name = "ReviveStation " + go.name };
+                AssetDatabase.CreateAsset(material, path);
+            }
+            else
+            {
+                material.shader = shader;
+            }
+
             material.color = color;
             if (material.HasProperty("_BaseColor"))
                 material.SetColor("_BaseColor", color);
@@ -141,6 +158,7 @@ namespace CollarCali.EditorTools
                     material.SetColor("_EmissionColor", color * 2.5f);
             }
 
+            EditorUtility.SetDirty(material);
             renderer.sharedMaterial = material;
         }
     }

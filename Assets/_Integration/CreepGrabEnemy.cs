@@ -122,6 +122,11 @@ namespace CollarCali
                 relay.Root = health;
             }
 
+            // The creep's bar is how the team sees how close they are to freeing whoever it holds;
+            // a touch wider than a zombie's, as on the world sheet.
+            if (creep.GetComponent<ZombieHealthBar>() == null)
+                creep.AddComponent<ZombieHealthBar>().SetWorldWidth(1.02f);
+
             var grab = creep.AddComponent<CreepGrabEnemy>();
             grab.EnsureActivateRadius();
         }
@@ -859,11 +864,11 @@ namespace CollarCali
                 _health.SetInvulnerable(true);
 
             // A health bar over something that cannot be hurt just teaches the player to keep
-            // shooting it.
+            // shooting it: it shows a skull and RUN! instead.
             foreach (var bar in GetComponentsInChildren<ZombieHealthBar>(true))
             {
                 if (bar != null)
-                    bar.gameObject.SetActive(false);
+                    bar.ShowAsUnkillable();
             }
 
             _activated = true;

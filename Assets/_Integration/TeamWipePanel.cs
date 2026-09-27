@@ -28,6 +28,14 @@ namespace CollarCali
         /// <summary>Shows the card for a while. Calling it again just extends the time.</summary>
         public static void Show(string subtitle, float seconds)
         {
+#if CMPSETUP_COMPLETE
+            // The redesigned HUD draws the wipe itself (board 08); this card is the fallback.
+            if (UI.MomentDirector.Instance != null)
+            {
+                UI.MomentDirector.Instance.ShowTeamWipe(subtitle, seconds);
+                return;
+            }
+#endif
             var panel = Ensure();
             panel._subtitle.text = subtitle;
             panel._hideAt = Time.unscaledTime + Mathf.Max(0.1f, seconds);
@@ -36,6 +44,10 @@ namespace CollarCali
 
         public static void Hide()
         {
+#if CMPSETUP_COMPLETE
+            if (UI.MomentDirector.Instance != null)
+                UI.MomentDirector.Instance.HideTeamWipe();
+#endif
             if (_instance != null)
                 _instance.SetVisible(false);
         }

@@ -95,6 +95,9 @@ namespace CollarCali
 
         bool WasTogglePressed()
         {
+            if (UI.UiInput.MenuOpen)
+                return false;
+
             if (InputManager.inputActions != null)
             {
                 var action = InputManager.inputActions.GameControls.ToggleFlashLight;

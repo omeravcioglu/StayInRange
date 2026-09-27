@@ -28,6 +28,13 @@ namespace CollarCali
         [Networked] public int CharacterIndex { get; set; }
 
         /// <summary>
+        /// The colour this player picked, as a PlayerColorPalette index (-1 while unset). Everyone
+        /// shares one body, so this is who they are; the lobby strikes out taken colours and, if two
+        /// players land on the same one, the higher player id moves (LobbyController).
+        /// </summary>
+        [Networked] public int ColorIndex { get; set; }
+
+        /// <summary>
         /// Set by the host the instant it commits to starting. Clients that see it in time lock
         /// their lobby UI; the scene sync is what actually guarantees the transition, so treat
         /// this as a UI hint rather than the mechanism.
@@ -62,7 +69,10 @@ namespace CollarCali
             // Seed the networked pick from whatever this client last chose so the roster is right
             // before the player touches the selector.
             if (Object.HasStateAuthority)
+            {
                 CharacterIndex = CharacterSelection.SelectedIndex;
+                ColorIndex = PlayerColorPalette.SavedChoice;
+            }
 
             if (!_hooked)
             {
@@ -135,6 +145,19 @@ namespace CollarCali
             CharacterSelection.SelectedIndex = index;
             if (Object != null && Object.HasStateAuthority)
                 CharacterIndex = CharacterSelection.SelectedIndex;
+        }
+
+        /// <summary>
+        /// Local player picks a colour: networked so the roster and everyone's picker show it, and
+        /// saved locally so the match spawns this player in it.
+        /// </summary>
+        public void SetColor(int index)
+        {
+            if (Object == null || !Object.HasStateAuthority)
+                return;
+            int clamped = Mathf.Clamp(index, 0, PlayerColorPalette.Count - 1);
+            ColorIndex = clamped;
+            PlayerColorPalette.SavedChoice = clamped;
         }
 
         public void FlagMatchStarting()

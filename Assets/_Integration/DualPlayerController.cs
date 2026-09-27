@@ -33,13 +33,66 @@ namespace CollarCali
         [Header("Body height")]
         [SerializeField] float fpsBodyLocalY = 1f;
 
-        [Header("Mode switch")]
-        [Tooltip("Seconds for the camera to pull back from the eyes to over the shoulder when " +
-                 "entering third person. 0 restores the old instant cut.")]
-        [SerializeField] float tppTransitionSeconds = 0.55f;
+        // Camera transition timings live in Resources/PlayerTuning (Camera Transition), next to every
+        // other player tuning value, so they can be adjusted in one place during playtests.
 
         // How much to raise the Malbers jump so the taller Meshy characters clear obstacles like Steve did.
         const float SteveJumpBoost = 1.3f;
+
+        /// <summary>Height of the chest above Steve's feet: where third-person carrying and aiming start from.</summary>
+        const float TpsChestHeight = 1.35f;
+
+        /// <summary>
+        /// Cowsins actions muted while a body is held. Every one of them shares a key with the
+        /// telekinesis (LMB, RMB, E, Q) or would act mid-throw (melee, reload, weapon switch).
+        /// </summary>
+        static readonly string[] CowsinsCarryBlocked =
+        {
+            "Firing", "Aiming", "Melee", "Reloading", "Inspect", "Drop", "Interacting",
+            "InventoryFavOpen", "ToggleTipsCanvas", "InventoryOpen", "Scrolling",
+        };
+
+        /// <summary>The Malbers equivalents: both mouse buttons, the action keys, interact and Q.</summary>
+        const string MalbersCarryBlocked = "Action1,Action2,Action3,Action4,Interact,Ability1";
+
+        /// <summary>Muted while a body is merely targeted, so E lifts it and nothing else.</summary>
+        static readonly string[] CowsinsInteractOnly = { "Interacting" };
+        const string MalbersInteractOnly = "Interact";
+
+        bool _suspended;
+        bool _transitioning;
+        Coroutine _exitTppRoutine;
+
+        bool _carrying;
+        bool _interactClaimed;
+        float _carrySpeedMultiplier = 1f;
+        bool _timeScaled;
+        float _savedTimeMultiplier = 1f;
+        readonly List<InputAction> _mutedCowsinsActions = new();
+        string _mutedMalbersInputs = string.Empty;
+        bool _punchRemoved;
+
+        readonly List<Renderer> _steveRenderersHidden = new();
+        readonly List<Collider> _steveCollidersDisabled = new();
+        bool _steveFrozen;
+        bool _steveWasKinematic;
+
+        CinemachineBlenderSettings _savedCustomBlends;
+
+        // Third-person throw aim view: a camera in the character's eyes while a throw is aimed.
+        CinemachineCamera _aimEyeCamera;
+        Coroutine _aimViewRoutine;
+        bool _aimViewRequested;
+        bool _aimEyeLive;
+        float _aimYaw;
+        float _aimPitch;
+        float _aimEyeY;
+        bool _aimEyeYValid;
+        bool _aimStrafeSet;
+        bool _aimSavedStrafe;
+        ThirdPersonFollowTarget[] _lookSources;
+        readonly List<Renderer> _steveRenderersShadowOnly = new();
+        readonly List<UnityEngine.Rendering.ShadowCastingMode> _steveShadowModes = new();
 
         PlayerControl _playerControl;
         PlayerMovement _movement;
@@ -61,6 +114,15 @@ namespace CollarCali
 
         public bool IsThirdPerson => _thirdPerson;
         public MAnimal Animal => animal;
+
+        /// <summary>True while the player is dead: neither controller runs and mode switches are ignored.</summary>
+        public bool IsSuspended => _suspended;
+
+        /// <summary>True while the camera is travelling between first and third person.</summary>
+        public bool IsTransitioning => _transitioning;
+
+        /// <summary>True while the third-person view is in the character's eyes for aiming a throw.</summary>
+        public bool IsAimViewLive => _aimEyeLive;
 
         FpsNetworkBridge _networkBridge;
         bool _networkMode;
@@ -396,7 +458,9 @@ namespace CollarCali
 
         public void EnterThirdPerson()
         {
-            if (_thirdPerson)
+            // Dead players have no controller to switch, and a switch requested mid-transition would
+            // start a second camera blend on top of the first.
+            if (_thirdPerson || _suspended || _transitioning)
                 return;
 
             EnsureChildren();
@@ -410,6 +474,7 @@ namespace CollarCali
         System.Collections.IEnumerator EnterThirdPersonRoutine(Vector3 pos, float yaw)
         {
             _thirdPerson = true;
+            _transitioning = true;
 
             // Before SetFpsActive, which switches the FPS camera off: the handoff needs to read that
             // camera's pose while it still has one, and both must change in the same frame so the two
@@ -424,6 +489,7 @@ namespace CollarCali
             if (steveRoot == null)
             {
                 Debug.LogError("[DualPlayer] Steve is missing. Cannot enter third person.");
+                _transitioning = false;
                 yield break;
             }
 
@@ -473,24 +539,117 @@ namespace CollarCali
             Cursor.lockState = CursorLockMode.Locked;
             Cursor.visible = false;
             _enterTppRoutine = null;
+            _transitioning = false;
             Debug.Log("[DualPlayer] Switched to Malbers third person.");
         }
 
         public void ExitToFirstPerson()
         {
-            if (!_thirdPerson)
+            if (!_thirdPerson || _suspended || _transitioning)
                 return;
+
+            // The throw aim view is a third-person camera; leaving third person ends it outright.
+            EndAimViewImmediate();
 
             var pos = steveRoot != null ? steveRoot.transform.position : transform.position;
             var yaw = steveRoot != null ? steveRoot.transform.eulerAngles.y : transform.eulerAngles.y;
+            var velocity = SteveVelocity();
+
+            var tuning = PlayerTuning.Active.cameraTransition;
+            var brain = camerasCm3 != null ? camerasCm3.GetComponentInChildren<CinemachineBrain>(true) : null;
+            if (tuning.toFirstPersonSeconds > 0f && brain != null && brain.isActiveAndEnabled &&
+                ResolveFpsCamera() != null)
+            {
+                _exitTppRoutine = StartCoroutine(ExitThirdPersonRoutine(pos, yaw, velocity, brain,
+                    tuning.toFirstPersonSeconds));
+                return;
+            }
+
             ApplyMode(thirdPerson: false, teleport: true, pos, yaw);
+            if (tuning.keepMomentumIntoFirstPerson)
+                SetFpsVelocity(velocity);
             _onModeChanged?.Invoke(false);
+            ApplyCombatInputBlock();
+            Debug.Log("[DualPlayer] Switched to FPS.");
+        }
+
+        /// <summary>
+        /// The way back into the eyes, mirrored from the way out.
+        ///
+        /// Control changes hands at once - Malbers stops, Cowsins takes over at Steve's position and
+        /// velocity - so the player is never left without a controller. Only the VIEW travels: the
+        /// Cinemachine brain keeps rendering and blends from the shoulder camera to a camera that is
+        /// re-parked on the live first-person eye every frame, so position, rotation and field of view
+        /// all ease into exactly what the FPS camera will show. Only then are the FPS cameras switched
+        /// on and the third-person rig off, on a frame where the two views are identical.
+        /// </summary>
+        System.Collections.IEnumerator ExitThirdPersonRoutine(Vector3 pos, float yaw, Vector3 velocity,
+            CinemachineBrain brain, float seconds)
+        {
+            _thirdPerson = false;
+            _transitioning = true;
+
+            // Malbers stops now and steps out of the way. It stays active, frozen and invisible, so
+            // the shoulder camera still has its target while the view travels away from it.
+            if (_steveStarted)
+                EnableMalbers(false);
+            FreezeSteveForExit(true);
+
+            PlaceFps(pos, yaw);
+            SetCowsinsInputEnabled(true);
+            SetFpsActive(true);
+            _onModeChanged?.Invoke(false);
+            // The bridge has just switched the whole Cowsins stack back on, cameras included; they
+            // stay dark until the travel ends so exactly one camera renders throughout.
+            MuteFpsCameras(true);
+
+            if (PlayerTuning.Active.cameraTransition.keepMomentumIntoFirstPerson)
+                SetFpsVelocity(velocity);
+            ApplyCombatInputBlock();
+
+            var eye = ResolveFpsCamera();
+            PrepareHandoffBlend(brain, seconds);
+            PlaceHandoffOnEye(eye);
+            _handoffCamera.Priority.Value = 1000;
+
+            float end = Time.time + seconds;
+            while (Time.time < end)
+            {
+                yield return null;
+                if (eye == null)
+                    break;
+                // Tracks the eye, not a snapshot of it: the player can already look around, and the
+                // blend has to land on wherever they are looking when it finishes.
+                PlaceHandoffOnEye(eye);
+                MuteFpsCameras(true);
+            }
+
+            // One more frame parked on the eye, so the brain has fully arrived before the cut.
+            yield return null;
+
+            MuteFpsCameras(false);
+            SetFpsSideRenderersHidden(false);
+            FreezeSteveForExit(false);
+            if (camerasCm3 != null)
+                camerasCm3.SetActive(false);
+            if (steveRoot != null)
+                steveRoot.SetActive(false);
+            ResetCameraHandoff();
+
+            if (UIController.Instance != null)
+                UIController.Instance.LockMouse();
+
+            _exitTppRoutine = null;
+            _transitioning = false;
             Debug.Log("[DualPlayer] Switched to FPS.");
         }
 
         void ApplyMode(bool thirdPerson, bool teleport, Vector3 pos = default, float yaw = 0f)
         {
             _thirdPerson = thirdPerson;
+
+            if (!thirdPerson)
+                EndAimViewImmediate();
 
             if (thirdPerson)
             {
@@ -533,6 +692,9 @@ namespace CollarCali
                     PlaceFps(pos, yaw);
                 SetCowsinsInputEnabled(true);
                 SetFpsActive(true);
+                // Enabling Cowsins input re-enables every one of its actions, including any that are
+                // muted because a body is being held.
+                ApplyCombatInputBlock();
             }
         }
 
@@ -673,7 +835,8 @@ namespace CollarCali
         /// </summary>
         void BeginCameraHandoff()
         {
-            if (camerasCm3 == null || tppTransitionSeconds <= 0f)
+            float seconds = PlayerTuning.Active.cameraTransition.toThirdPersonSeconds;
+            if (camerasCm3 == null || seconds <= 0f)
                 return;
 
             AdoptUnderPlayerMain(camerasCm3);
@@ -683,27 +846,14 @@ namespace CollarCali
             if (brain == null)
                 return;
 
-            if (!_blendSaved)
-            {
-                _savedBlend = brain.DefaultBlend;
-                _blendSaved = true;
-            }
-            brain.DefaultBlend = new CinemachineBlendDefinition(
-                CinemachineBlendDefinition.Styles.EaseInOut, tppTransitionSeconds);
-
-            var eye = ResolveFpsCameraTransform();
+            var eye = ResolveFpsCamera();
             if (eye == null)
                 return;
 
-            if (_handoffCamera == null)
-            {
-                var go = new GameObject("CM FPS Handoff");
-                go.transform.SetParent(camerasCm3.transform, false);
-                _handoffCamera = go.AddComponent<CinemachineCamera>();
-            }
-
-            _handoffCamera.gameObject.SetActive(true);
-            _handoffCamera.transform.SetPositionAndRotation(eye.position, eye.rotation);
+            PrepareHandoffBlend(brain, seconds);
+            // Lens included: the handoff starts at the FPS field of view, so the brain eases the FOV
+            // to the shoulder camera's along with the position instead of popping it on frame one.
+            PlaceHandoffOnEye(eye);
             // Above the rig's highest (LockOn at 20) by a wide margin, so nothing outbids the eye
             // pose while the character and its follow targets are still being placed.
             _handoffCamera.Priority.Value = 1000;
@@ -721,49 +871,230 @@ namespace CollarCali
             _handoffCamera.Priority.Value = -1000;
             // Left active until the blend has finished: deactivating the camera it is blending FROM
             // would collapse the blend into the cut this exists to avoid.
-            StartCoroutine(RetireHandoffCamera(tppTransitionSeconds + 0.1f));
+            StartCoroutine(RetireHandoffCamera(PlayerTuning.Active.cameraTransition.toThirdPersonSeconds + 0.1f));
         }
 
         System.Collections.IEnumerator RetireHandoffCamera(float delay)
         {
             yield return new WaitForSeconds(delay);
-            if (_handoffCamera != null)
+            // Not while a later transition is using it again.
+            if (_handoffCamera != null && !_transitioning)
                 _handoffCamera.gameObject.SetActive(false);
+            if (!_transitioning && !_aimEyeLive)
+                RestoreBrainBlends();
+        }
+
+        /// <summary>
+        /// Sets the brain up to blend over <paramref name="seconds"/> with the tuned easing, and makes
+        /// sure the handoff camera exists.
+        ///
+        /// Custom blends are lifted for the duration: a rig-specific "any camera" entry would
+        /// otherwise override this blend and quietly bring the snap back.
+        /// </summary>
+        void PrepareHandoffBlend(CinemachineBrain brain, float seconds)
+        {
+            PrepareBrainBlend(brain, seconds);
+
+            if (_handoffCamera == null)
+            {
+                var go = new GameObject("CM FPS Handoff");
+                go.transform.SetParent(camerasCm3.transform, false);
+                _handoffCamera = go.AddComponent<CinemachineCamera>();
+            }
+
+            _handoffCamera.gameObject.SetActive(true);
+        }
+
+        /// <summary>
+        /// Makes the brain's next blend take <paramref name="seconds"/> with the tuned easing, keeping
+        /// the rig's own settings to put back afterwards (RestoreBrainBlends).
+        /// </summary>
+        void PrepareBrainBlend(CinemachineBrain brain, float seconds)
+        {
+            if (!_blendSaved)
+            {
+                _savedBlend = brain.DefaultBlend;
+                _savedCustomBlends = brain.CustomBlends;
+                _blendSaved = true;
+            }
+
+            brain.CustomBlends = null;
+            brain.DefaultBlend = new CinemachineBlendDefinition(
+                PlayerTuning.Active.cameraTransition.blendStyle, seconds);
+        }
+
+        /// <summary>Parks the handoff camera exactly on the FPS eye: pose, field of view and near plane.</summary>
+        void PlaceHandoffOnEye(Camera eye)
+        {
+            if (_handoffCamera == null || eye == null)
+                return;
+
+            _handoffCamera.transform.SetPositionAndRotation(eye.transform.position, eye.transform.rotation);
+            var lens = _handoffCamera.Lens;
+            lens.FieldOfView = eye.fieldOfView;
+            lens.NearClipPlane = eye.nearClipPlane;
+            _handoffCamera.Lens = lens;
         }
 
         void ResetCameraHandoff()
         {
             if (_handoffCamera != null)
-                _handoffCamera.gameObject.SetActive(false);
-
-            if (_blendSaved && camerasCm3 != null)
             {
-                var brain = camerasCm3.GetComponentInChildren<CinemachineBrain>(true);
-                if (brain != null)
-                    brain.DefaultBlend = _savedBlend;
-                _blendSaved = false;
+                _handoffCamera.Priority.Value = -1000;
+                _handoffCamera.gameObject.SetActive(false);
             }
+
+            RestoreBrainBlends();
+        }
+
+        void RestoreBrainBlends()
+        {
+            if (!_blendSaved || camerasCm3 == null)
+                return;
+
+            var brain = camerasCm3.GetComponentInChildren<CinemachineBrain>(true);
+            if (brain != null)
+            {
+                brain.DefaultBlend = _savedBlend;
+                brain.CustomBlends = _savedCustomBlends;
+            }
+            _blendSaved = false;
         }
 
         /// <summary>The live FPS eye, preferring the tagged main camera over the weapon overlay.</summary>
         Transform ResolveFpsCameraTransform()
         {
+            var camera = ResolveFpsCamera();
+            return camera != null ? camera.transform : null;
+        }
+
+        Camera ResolveFpsCamera()
+        {
             var root = fpsCameraRoot != null ? fpsCameraRoot : fpsRoot;
             if (root == null)
                 return null;
 
-            Transform fallback = null;
+            Camera fallback = null;
             foreach (var camera in root.GetComponentsInChildren<Camera>(true))
             {
                 if (camera == null)
                     continue;
+                if (camerasCm3 != null && camera.transform.IsChildOf(camerasCm3.transform))
+                    continue;
                 if (camera.CompareTag("MainCamera"))
-                    return camera.transform;
+                    return camera;
                 if (fallback == null)
-                    fallback = camera.transform;
+                    fallback = camera;
             }
 
             return fallback;
+        }
+
+        /// <summary>
+        /// Keeps the FPS cameras from rendering (and their listener from hearing) while leaving their
+        /// objects active, so mouse look and the FOV manager keep updating the eye the blend is
+        /// travelling towards.
+        /// </summary>
+        void MuteFpsCameras(bool mute)
+        {
+            if (fpsRoot == null)
+                return;
+
+            foreach (var camera in fpsRoot.GetComponentsInChildren<Camera>(true))
+            {
+                if (camera == null || (camerasCm3 != null && camera.transform.IsChildOf(camerasCm3.transform)))
+                    continue;
+                camera.enabled = !mute;
+            }
+
+            foreach (var listener in fpsRoot.GetComponentsInChildren<AudioListener>(true))
+            {
+                if (listener != null)
+                    listener.enabled = !mute;
+            }
+        }
+
+        /// <summary>
+        /// Steve during the camera's journey back into the eyes: invisible, so the camera does not
+        /// pass through its head; collision-free, so the FPS capsule standing in the same spot is not
+        /// shoved; and kinematic, so it cannot fall through the floor it no longer collides with.
+        /// </summary>
+        void FreezeSteveForExit(bool freeze)
+        {
+            if (steveRoot == null)
+                return;
+
+            if (freeze)
+            {
+                if (_steveFrozen)
+                    return;
+                _steveFrozen = true;
+
+                _steveRenderersHidden.Clear();
+                foreach (var renderer in steveRoot.GetComponentsInChildren<Renderer>(true))
+                {
+                    if (renderer == null || !renderer.enabled)
+                        continue;
+                    renderer.enabled = false;
+                    _steveRenderersHidden.Add(renderer);
+                }
+
+                _steveCollidersDisabled.Clear();
+                foreach (var collider in steveRoot.GetComponentsInChildren<Collider>(true))
+                {
+                    if (collider == null || !collider.enabled)
+                        continue;
+                    collider.enabled = false;
+                    _steveCollidersDisabled.Add(collider);
+                }
+
+                var rb = animal != null ? animal.RB : null;
+                if (rb != null)
+                {
+                    _steveWasKinematic = rb.isKinematic;
+                    if (!rb.isKinematic)
+                    {
+                        rb.linearVelocity = Vector3.zero;
+                        rb.angularVelocity = Vector3.zero;
+                    }
+                    rb.isKinematic = true;
+                }
+                return;
+            }
+
+            if (!_steveFrozen)
+                return;
+            _steveFrozen = false;
+
+            foreach (var renderer in _steveRenderersHidden)
+            {
+                if (renderer != null)
+                    renderer.enabled = true;
+            }
+            _steveRenderersHidden.Clear();
+
+            foreach (var collider in _steveCollidersDisabled)
+            {
+                if (collider != null)
+                    collider.enabled = true;
+            }
+            _steveCollidersDisabled.Clear();
+
+            var body = animal != null ? animal.RB : null;
+            if (body != null)
+                body.isKinematic = _steveWasKinematic;
+        }
+
+        Vector3 SteveVelocity()
+        {
+            var rb = animal != null ? animal.RB : null;
+            return rb != null && !rb.isKinematic ? rb.linearVelocity : Vector3.zero;
+        }
+
+        void SetFpsVelocity(Vector3 velocity)
+        {
+            if (_fpsRigidbody != null && !_fpsRigidbody.isKinematic)
+                _fpsRigidbody.linearVelocity = velocity;
         }
 
         /// <summary>
@@ -790,13 +1121,14 @@ namespace CollarCali
                 return;
             }
 
-            _fpsRenderersHiddenForTpp.Clear();
+            // Additive: hiding twice (third person, then death) must not forget what the first call
+            // hid, or those renderers would never come back.
             if (fpsRoot == null)
                 return;
 
             foreach (var renderer in fpsRoot.GetComponentsInChildren<Renderer>(true))
             {
-                if (renderer == null || !renderer.enabled)
+                if (renderer == null || !renderer.enabled || _fpsRenderersHiddenForTpp.Contains(renderer))
                     continue;
                 // Steve and the camera rig live elsewhere in the hierarchy, but guard anyway - they
                 // can be re-parented under PlayerMain at runtime.
@@ -909,6 +1241,7 @@ namespace CollarCali
                 animal.LockInput = false;
                 animal.LockMovement = false;
                 CapSteveJumps();
+                RemoveMalbersPunch();
 
                 // Bounce MInputLink so it reconnects with an active PlayerInput.
                 var link = steveRoot.GetComponentInChildren<MInputLink>(true);
@@ -927,6 +1260,10 @@ namespace CollarCali
                 }
 
                 BindMalbersToTpsCamera();
+
+                // A body held across the switch keeps its slowdown and its muted inputs in the new mode.
+                ApplyCarrySlowdown();
+                ApplyCombatInputBlock();
             }
             else
             {
@@ -976,7 +1313,9 @@ namespace CollarCali
             var jumpBasic = animal.State_Get<JumpBasic>();
             if (jumpBasic != null)
             {
-                jumpBasic.Jumps.Value = 2;
+                // One jump, matching first person (Cowsins maxJumps is 1): double jumping was removed
+                // from the game, and a mode switch must not quietly bring it back.
+                jumpBasic.Jumps.Value = 1;
                 // The Meshy characters are taller than Steve, so the stock jump reads as a low hop.
                 // Nudge each jump profile's apex + launch speed up a little. Malbers clones states per
                 // animal at runtime, so this touches only this player's instance and resets each play.
@@ -1089,6 +1428,705 @@ namespace CollarCali
                 return fpsBody.eulerAngles.y;
             return transform.eulerAngles.y;
         }
+
+        #region Third-person throw aim view
+
+        /// <summary>
+        /// Moves the third-person view into the character's eyes to aim a throw (true), and back over
+        /// the shoulder afterwards (false) - after <paramref name="returnDelay"/> seconds, so a throw
+        /// can be watched leaving before the camera pulls back.
+        ///
+        /// Only the CAMERA changes. Malbers stays in control the whole time: no controller swap, no
+        /// teleport, nothing for the network to see beyond the character turning to face the aim.
+        /// The view is a Cinemachine camera parked on the eyes, so the brain blends position,
+        /// rotation and field of view in and out exactly as it does for the mode switch.
+        ///
+        /// Safe to call every frame; only a change of request does anything.
+        /// </summary>
+        public void SetThirdPersonAimView(bool active, float returnDelay = 0f)
+        {
+            var settings = PlayerTuning.Active.cameraTransition;
+
+            if (active)
+            {
+                if (_aimViewRequested || !_thirdPerson || _suspended || _transitioning ||
+                    !settings.firstPersonAimInThirdPerson || steveRoot == null)
+                    return;
+
+                var brain = camerasCm3 != null ? camerasCm3.GetComponentInChildren<CinemachineBrain>(true) : null;
+                if (brain == null || !brain.isActiveAndEnabled)
+                    return;
+
+                _aimViewRequested = true;
+                if (_aimViewRoutine != null)
+                    StopCoroutine(_aimViewRoutine);
+                _aimViewRoutine = StartCoroutine(AimViewInRoutine(brain, settings));
+                return;
+            }
+
+            if (!_aimViewRequested)
+                return;
+
+            _aimViewRequested = false;
+            if (_aimViewRoutine != null)
+                StopCoroutine(_aimViewRoutine);
+
+            var outBrain = camerasCm3 != null ? camerasCm3.GetComponentInChildren<CinemachineBrain>(true) : null;
+            if (outBrain == null || !_aimEyeLive)
+            {
+                EndAimViewImmediate();
+                return;
+            }
+
+            _aimViewRoutine = StartCoroutine(AimViewOutRoutine(outBrain, settings, Mathf.Max(0f, returnDelay)));
+        }
+
+        System.Collections.IEnumerator AimViewInRoutine(CinemachineBrain brain,
+            PlayerTuning.CameraSettings settings)
+        {
+            if (_aimEyeCamera == null)
+            {
+                var go = new GameObject("CM TPS Aim Eye");
+                go.transform.SetParent(camerasCm3.transform, false);
+                _aimEyeCamera = go.AddComponent<CinemachineCamera>();
+            }
+
+            // A fresh aim starts looking wherever the shoulder camera was looking. Re-aiming while
+            // the view is still on its way out carries on from the eye camera's own direction.
+            if (!_aimEyeLive)
+            {
+                var view = brain.transform;
+                _aimYaw = view.eulerAngles.y;
+                _aimPitch = Mathf.Clamp(Mathf.DeltaAngle(0f, view.eulerAngles.x),
+                    settings.aimViewPitchLimits.x, settings.aimViewPitchLimits.y);
+                _aimEyeYValid = false;
+            }
+
+            _aimEyeLive = true;
+            _aimEyeCamera.gameObject.SetActive(true);
+            UpdateAimEye(settings, applyLook: false);
+
+            PrepareBrainBlend(brain, settings.aimViewInSeconds);
+            // Under the mode-switch handoff (1000), above every camera in the Malbers rig.
+            _aimEyeCamera.Priority.Value = 900;
+
+            // Facing the aim, like first person: sideways keys strafe, and teammates see the
+            // character turned towards where the body is about to go.
+            if (animal != null && !_aimStrafeSet)
+            {
+                _aimSavedStrafe = animal.Strafe;
+                _aimStrafeSet = true;
+                animal.Strafe = true;
+            }
+
+            float elapsed = 0f;
+            bool hidden = false;
+            while (true)
+            {
+                yield return null;
+                elapsed += Time.deltaTime;
+                UpdateAimEye(settings, applyLook: true);
+
+                // Hidden only once the camera is nearly inside the head, so the character does not
+                // vanish while the view is still behind it.
+                if (!hidden && elapsed >= settings.aimViewInSeconds * 0.55f)
+                {
+                    SetSteveHiddenForAimView(true);
+                    hidden = true;
+                }
+            }
+        }
+
+        System.Collections.IEnumerator AimViewOutRoutine(CinemachineBrain brain,
+            PlayerTuning.CameraSettings settings, float delay)
+        {
+            // Still aiming from the eyes while the thrown body flies away.
+            float waited = 0f;
+            while (waited < delay)
+            {
+                yield return null;
+                waited += Time.deltaTime;
+                UpdateAimEye(settings, applyLook: true);
+            }
+
+            RestoreAimStrafe();
+            PrepareBrainBlend(brain, settings.aimViewOutSeconds);
+            // The brain blends back to the shoulder camera, which Malbers has kept aligned with the
+            // eye camera's direction the whole time it was live - so the view comes back facing
+            // where the throw went, not where the shoulder camera was left.
+            _aimEyeCamera.Priority.Value = -1000;
+
+            float elapsed = 0f;
+            bool shown = false;
+            while (elapsed < settings.aimViewOutSeconds + 0.05f)
+            {
+                yield return null;
+                elapsed += Time.deltaTime;
+                // Keeps riding with the character, but no longer takes the mouse: the shoulder
+                // camera it is blending into has it now.
+                UpdateAimEye(settings, applyLook: false);
+
+                if (!shown && elapsed >= settings.aimViewOutSeconds * 0.35f)
+                {
+                    SetSteveHiddenForAimView(false);
+                    shown = true;
+                }
+            }
+
+            EndAimViewImmediate();
+        }
+
+        /// <summary>Drops the aim view at once, with no blend - on death, on a mode switch, or when finished.</summary>
+        void EndAimViewImmediate()
+        {
+            _aimViewRequested = false;
+            if (_aimViewRoutine != null)
+            {
+                StopCoroutine(_aimViewRoutine);
+                _aimViewRoutine = null;
+            }
+
+            if (_aimEyeCamera != null)
+            {
+                _aimEyeCamera.Priority.Value = -1000;
+                _aimEyeCamera.gameObject.SetActive(false);
+            }
+
+            SetSteveHiddenForAimView(false);
+            RestoreAimStrafe();
+
+            if (_aimEyeLive)
+            {
+                _aimEyeLive = false;
+                if (!_transitioning)
+                    RestoreBrainBlends();
+            }
+        }
+
+        void RestoreAimStrafe()
+        {
+            if (!_aimStrafeSet)
+                return;
+            _aimStrafeSet = false;
+            if (animal != null)
+                animal.Strafe = _aimSavedStrafe;
+        }
+
+        /// <summary>
+        /// Parks the eye camera on the character's eyes and, when it has the view, turns it with the
+        /// mouse. The look is read from the same Malbers input the shoulder camera uses, with the
+        /// same sensitivity and inversion, because Malbers stops turning its own camera the moment
+        /// it is not the live one.
+        /// </summary>
+        void UpdateAimEye(PlayerTuning.CameraSettings settings, bool applyLook)
+        {
+            if (_aimEyeCamera == null || steveRoot == null)
+                return;
+
+            // The eye camera follows the mouse itself; a menu over the game holds it still too.
+            if (applyLook && !_menuOpen)
+                ApplyAimLook(settings);
+
+            var feet = steveRoot.transform.position;
+            var head = animal != null && animal.Anim != null && animal.Anim.isHuman
+                ? animal.Anim.GetBoneTransform(HumanBodyBones.Head)
+                : null;
+            float targetY = head != null ? head.position.y + 0.08f : feet.y + settings.aimViewEyeHeight;
+
+            // Smoothed, so the head's walk bob does not shake the view.
+            _aimEyeY = _aimEyeYValid
+                ? Mathf.Lerp(_aimEyeY, targetY, 1f - Mathf.Exp(-12f * Time.deltaTime))
+                : targetY;
+            _aimEyeYValid = true;
+
+            var yaw = Quaternion.Euler(0f, _aimYaw, 0f);
+            var position = new Vector3(feet.x, _aimEyeY, feet.z) + yaw * (Vector3.forward * 0.12f);
+            _aimEyeCamera.transform.SetPositionAndRotation(position, Quaternion.Euler(_aimPitch, _aimYaw, 0f));
+
+            var lens = _aimEyeCamera.Lens;
+            float fov = settings.aimViewFieldOfView;
+            if (fov <= 0f)
+            {
+                var fpsCamera = ResolveFpsCamera();
+                fov = fpsCamera != null ? fpsCamera.fieldOfView : 60f;
+            }
+            lens.FieldOfView = fov;
+            lens.NearClipPlane = 0.05f;
+            _aimEyeCamera.Lens = lens;
+        }
+
+        void ApplyAimLook(PlayerTuning.CameraSettings settings)
+        {
+            var source = LookSource();
+            if (source == null)
+                return;
+
+            var look = source.look.Value;
+            if (look.sqrMagnitude < 0.00001f)
+                return;
+
+            // The same arithmetic ThirdPersonFollowTarget uses, so the eyes turn exactly as fast as
+            // the shoulder camera did.
+            float multiplier = source.UsingMouse.Value ? 1f : Time.deltaTime * source.GamepadMult.Value;
+            _aimYaw += look.x * (source.invertX.Value ? -1f : 1f) * source.XMultiplier.Value * multiplier;
+            _aimPitch += look.y * (source.invertY.Value ? 1f : -1f) * source.YMultiplier.Value * multiplier;
+            _aimPitch = Mathf.Clamp(_aimPitch, settings.aimViewPitchLimits.x, settings.aimViewPitchLimits.y);
+        }
+
+        /// <summary>
+        /// The rig's look input. It is routed to a single camera's follow target, so whichever one is
+        /// currently receiving a value is the one to read.
+        /// </summary>
+        ThirdPersonFollowTarget LookSource()
+        {
+            if (camerasCm3 == null)
+                return null;
+            if (_lookSources == null || _lookSources.Length == 0)
+                _lookSources = camerasCm3.GetComponentsInChildren<ThirdPersonFollowTarget>(true);
+
+            ThirdPersonFollowTarget best = null;
+            float bestMagnitude = -1f;
+            foreach (var source in _lookSources)
+            {
+                if (source == null)
+                    continue;
+                float magnitude = source.look.Value.sqrMagnitude;
+                if (magnitude > bestMagnitude)
+                {
+                    bestMagnitude = magnitude;
+                    best = source;
+                }
+            }
+
+            return best;
+        }
+
+        /// <summary>
+        /// Takes Steve out of the aim view without losing his shadow: renderers switch to shadows
+        /// only, the way a first-person body usually works, rather than switching off.
+        /// </summary>
+        void SetSteveHiddenForAimView(bool hidden)
+        {
+            if (!hidden)
+            {
+                for (int i = 0; i < _steveRenderersShadowOnly.Count; i++)
+                {
+                    if (_steveRenderersShadowOnly[i] != null)
+                        _steveRenderersShadowOnly[i].shadowCastingMode = _steveShadowModes[i];
+                }
+                _steveRenderersShadowOnly.Clear();
+                _steveShadowModes.Clear();
+                return;
+            }
+
+            if (steveRoot == null || _steveRenderersShadowOnly.Count > 0)
+                return;
+
+            foreach (var renderer in steveRoot.GetComponentsInChildren<Renderer>(true))
+            {
+                if (renderer == null || !renderer.enabled ||
+                    renderer.shadowCastingMode == UnityEngine.Rendering.ShadowCastingMode.ShadowsOnly)
+                    continue;
+                _steveRenderersShadowOnly.Add(renderer);
+                _steveShadowModes.Add(renderer.shadowCastingMode);
+                renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.ShadowsOnly;
+            }
+        }
+
+        #endregion
+
+        #region Death
+
+        /// <summary>
+        /// Parks BOTH controllers for as long as the player is dead: no movement, no input, no
+        /// living camera, and no capsule left standing where the corpse lies.
+        ///
+        /// A death in third person first drops back to (parked) first person, so there is a single
+        /// state to come back from. The spectator camera takes over the view.
+        /// </summary>
+        public void EnterDowned()
+        {
+            if (_suspended)
+                return;
+
+            StopModeTransitions();
+            SetCarrying(false, 1f);
+
+            if (_thirdPerson)
+            {
+                var pos = steveRoot != null ? steveRoot.transform.position : transform.position;
+                var yaw = steveRoot != null ? steveRoot.transform.eulerAngles.y : transform.eulerAngles.y;
+
+                if (_steveStarted)
+                    EnableMalbers(false);
+                if (camerasCm3 != null)
+                    camerasCm3.SetActive(false);
+                if (steveRoot != null)
+                    steveRoot.SetActive(false);
+
+                _thirdPerson = false;
+                // Where the player actually died, so anything reading the gameplay position while
+                // they are down reads a sensible place rather than the parked FPS body.
+                PlaceFps(pos, yaw);
+                _onModeChanged?.Invoke(false);
+            }
+
+            _suspended = true;
+            SetCowsinsInputEnabled(false);
+            SetFpsActive(false);
+            SetFpsSideRenderersHidden(true);
+        }
+
+        /// <summary>
+        /// Returns control after a revive, always in first person. The caller has already placed the
+        /// player (ReviveAt teleports before clearing IsDead).
+        /// </summary>
+        public void ExitDowned()
+        {
+            if (!_suspended)
+                return;
+
+            _suspended = false;
+            SetFpsSideRenderersHidden(false);
+            SetCowsinsInputEnabled(true);
+            SetFpsActive(true);
+            ApplyCombatInputBlock();
+
+            Cursor.lockState = CursorLockMode.Locked;
+            Cursor.visible = false;
+        }
+
+        bool _menuOpen;
+        bool _menuTookControl;
+        bool _menuLockedInput;
+        bool _menuLockedMovement;
+        readonly List<ThirdPersonFollowTarget> _menuHeldCameras = new();
+
+        /// <summary>True while a menu is open over the running game (pause, settings).</summary>
+        public bool IsMenuOpen => _menuOpen;
+
+        /// <summary>
+        /// A menu over the running game, where nothing actually pauses: the player stands still and
+        /// the camera stops following the mouse, in whichever mode is live, and the rest of the
+        /// world carries on.
+        ///
+        /// Safe to call every frame while the menu is up: a revive or a mode switch that hands
+        /// control back underneath it has it taken away again on the next call.
+        /// </summary>
+        public void SetMenuOpen(bool open)
+        {
+            if (open)
+            {
+                _menuOpen = true;
+                HoldForMenu();
+                return;
+            }
+
+            if (!_menuOpen)
+                return;
+
+            _menuOpen = false;
+            ReleaseMenuHold();
+        }
+
+        void HoldForMenu()
+        {
+            // First person: Cowsins' own gate stops movement, look, shooting and interaction. Only
+            // control the menu took is given back - a creep's grab or death took theirs for a reason.
+            if (_playerControl != null && _playerControl.IsControllable)
+            {
+                _playerControl.LoseControl();
+                _menuTookControl = true;
+            }
+
+            if (!_thirdPerson || animal == null)
+                return;
+
+            // Third person: Steve stops taking input, and the shoulder camera stops turning. Only
+            // the locks this took are given back, so a Malbers state holding its own keeps it.
+            if (!animal.LockInput)
+            {
+                animal.LockInput = true;
+                _menuLockedInput = true;
+            }
+            if (!animal.LockMovement)
+            {
+                animal.LockMovement = true;
+                _menuLockedMovement = true;
+            }
+
+            if (_menuHeldCameras.Count == 0 && camerasCm3 != null)
+            {
+                foreach (var follow in camerasCm3.GetComponentsInChildren<ThirdPersonFollowTarget>(true))
+                {
+                    if (follow == null || !follow.AllowCameraRotation.Value)
+                        continue;
+                    follow.AllowCameraRotation.Value = false;
+                    _menuHeldCameras.Add(follow);
+                }
+            }
+        }
+
+        void ReleaseMenuHold()
+        {
+            foreach (var follow in _menuHeldCameras)
+            {
+                if (follow != null)
+                    follow.AllowCameraRotation.Value = true;
+            }
+            _menuHeldCameras.Clear();
+
+            if (animal != null)
+            {
+                if (_menuLockedInput)
+                    animal.LockInput = false;
+                if (_menuLockedMovement)
+                    animal.LockMovement = false;
+            }
+            _menuLockedInput = _menuLockedMovement = false;
+
+            // Dead: control comes back with the revive instead. Held by a creep: when it lets go.
+            bool took = _menuTookControl;
+            _menuTookControl = false;
+            bool grabbed = _networkBridge != null && _networkBridge.IsHeldByCreep;
+            if (took && !grabbed && !_suspended && !_thirdPerson && _playerControl != null)
+                _playerControl.CheckIfCanGrantControl();
+        }
+
+        /// <summary>Abandons any camera transition in flight, putting everything it borrowed back.</summary>
+        void StopModeTransitions()
+        {
+            EndAimViewImmediate();
+
+            if (_enterTppRoutine != null)
+            {
+                StopCoroutine(_enterTppRoutine);
+                _enterTppRoutine = null;
+            }
+
+            if (_exitTppRoutine != null)
+            {
+                StopCoroutine(_exitTppRoutine);
+                _exitTppRoutine = null;
+                MuteFpsCameras(false);
+            }
+
+            FreezeSteveForExit(false);
+            ResetCameraHandoff();
+            _transitioning = false;
+        }
+
+        #endregion
+
+        #region Carrying support
+
+        /// <summary>
+        /// The view the telekinesis aims along, in either mode: from the eyes in first person, and
+        /// from the chest along the camera's aim in third person (the camera itself is metres behind
+        /// the character, which is the wrong place to hold a body from).
+        /// </summary>
+        public bool TryGetAim(out Vector3 origin, out Vector3 forward)
+        {
+            origin = default;
+            forward = Vector3.forward;
+
+            if (_suspended)
+                return false;
+
+            if (_thirdPerson)
+            {
+                if (steveRoot == null)
+                    return false;
+
+                var brain = camerasCm3 != null ? camerasCm3.GetComponentInChildren<CinemachineBrain>(true) : null;
+                forward = brain != null ? brain.transform.forward : steveRoot.transform.forward;
+                // From the eyes while the throw aim view is up, exactly as in first person, so the
+                // body floats where it would in first person and the throw leaves from the view.
+                origin = _aimEyeLive && _aimEyeCamera != null
+                    ? _aimEyeCamera.transform.position
+                    : steveRoot.transform.position + Vector3.up * TpsChestHeight;
+                return true;
+            }
+
+            var eye = ResolveFpsCameraTransform();
+            if (eye == null)
+                return false;
+
+            origin = eye.position;
+            forward = eye.forward;
+            return true;
+        }
+
+        /// <summary>How fast the active body is moving, whichever controller is driving it.</summary>
+        public Vector3 GetBodyVelocity()
+        {
+            if (_thirdPerson)
+                return SteveVelocity();
+
+            return _fpsRigidbody != null && !_fpsRigidbody.isKinematic
+                ? _fpsRigidbody.linearVelocity
+                : Vector3.zero;
+        }
+
+        /// <summary>Every collider belonging to this player's living bodies, active or not.</summary>
+        public void CollectOwnColliders(List<Collider> into)
+        {
+            if (into == null)
+                return;
+
+            if (fpsRoot != null)
+                into.AddRange(fpsRoot.GetComponentsInChildren<Collider>(true));
+            if (steveRoot != null)
+                into.AddRange(steveRoot.GetComponentsInChildren<Collider>(true));
+        }
+
+        /// <summary>
+        /// Carrying a body: slows the player down and mutes every input that shares a key with the
+        /// telekinesis, in whichever mode is active - and in the other one too, so switching modes
+        /// mid-carry cannot sneak a punch or a gunshot in.
+        /// </summary>
+        public void SetCarrying(bool carrying, float speedMultiplier)
+        {
+            _carrying = carrying;
+            _carrySpeedMultiplier = carrying ? Mathf.Clamp(speedMultiplier, 0.05f, 1f) : 1f;
+            ApplyCarrySlowdown();
+            ApplyCombatInputBlock();
+        }
+
+        void ApplyCarrySlowdown()
+        {
+            bool slow = _carrying && _carrySpeedMultiplier < 0.999f;
+
+            // First person: Cowsins' own weight multiplier, which its movement already scales the
+            // player's speed by. A modifier tagged with this component, so it never touches the
+            // weapon weight Cowsins keeps in the same stat.
+            var multipliers = fpsRoot != null ? fpsRoot.GetComponentInChildren<PlayerMultipliers>(true) : null;
+            if (multipliers != null)
+            {
+                multipliers.WeightMultiplier.RemoveModifierFromSource(this);
+                if (slow)
+                    multipliers.WeightMultiplier.AddModifier(new cowsins.StatModifier(
+                        _carrySpeedMultiplier - 1f, cowsins.StatModifierType.Multiplicative, this));
+            }
+
+            // Third person: Malbers' time multiplier, which scales its root-motion movement and the
+            // animation driving it together, so the character walks slower rather than sliding.
+            if (animal == null)
+                return;
+
+            if (slow)
+            {
+                if (!_timeScaled)
+                {
+                    _savedTimeMultiplier = animal.TimeMultiplier;
+                    _timeScaled = true;
+                }
+                animal.TimeMultiplier = _savedTimeMultiplier * _carrySpeedMultiplier;
+            }
+            else if (_timeScaled)
+            {
+                animal.TimeMultiplier = _savedTimeMultiplier;
+                _timeScaled = false;
+            }
+        }
+
+        /// <summary>
+        /// While a body is targeted but not yet held, the interact key belongs to the telekinesis:
+        /// otherwise pressing E at a body lying beside a door or a pickup would lift the body AND
+        /// use the door.
+        /// </summary>
+        public void SetInteractClaimed(bool claimed)
+        {
+            if (_interactClaimed == claimed)
+                return;
+            _interactClaimed = claimed;
+            ApplyCombatInputBlock();
+        }
+
+        /// <summary>
+        /// Mutes exactly the controller inputs the telekinesis currently needs to itself - everything
+        /// that shares a key while a body is held, just interact while one is targeted, nothing
+        /// otherwise - and restores the rest. Re-applied after every mode change, because enabling
+        /// Cowsins input re-enables all of its actions.
+        /// </summary>
+        void ApplyCombatInputBlock()
+        {
+            bool live = !_suspended;
+            string[] cowsinsWanted = !live ? System.Array.Empty<string>()
+                : _carrying ? CowsinsCarryBlocked
+                : _interactClaimed ? CowsinsInteractOnly
+                : System.Array.Empty<string>();
+            string malbersWanted = !live ? string.Empty
+                : _carrying ? MalbersCarryBlocked
+                : _interactClaimed ? MalbersInteractOnly
+                : string.Empty;
+
+            // Cowsins: let go of whatever is no longer wanted muted...
+            for (int i = _mutedCowsinsActions.Count - 1; i >= 0; i--)
+            {
+                var action = _mutedCowsinsActions[i];
+                if (action != null && System.Array.IndexOf(cowsinsWanted, action.name) >= 0)
+                    continue;
+
+                // ...but only switch it back on while first person is live. In third person the whole
+                // map is off, and it is switched back on in full when first person returns.
+                if (action != null && !_thirdPerson && !_suspended)
+                    action.Enable();
+                _mutedCowsinsActions.RemoveAt(i);
+            }
+
+            var actions = InputManager.inputActions;
+            var map = actions != null ? actions.asset.FindActionMap("GameControls") : null;
+            if (map != null)
+            {
+                foreach (var name in cowsinsWanted)
+                {
+                    var action = map.FindAction(name);
+                    if (action == null || !action.enabled)
+                        continue;
+                    action.Disable();
+                    if (!_mutedCowsinsActions.Contains(action))
+                        _mutedCowsinsActions.Add(action);
+                }
+            }
+
+            // Malbers. Re-asserted even when unchanged: MInputLink is bounced on every switch into
+            // third person, which can bring its buttons back.
+            var link = steveRoot != null ? steveRoot.GetComponentInChildren<MInputLink>(true) : null;
+            if (link == null)
+                return;
+
+            if (_mutedMalbersInputs != malbersWanted && !string.IsNullOrEmpty(_mutedMalbersInputs))
+                link.EnableInput(_mutedMalbersInputs, true);
+            if (!string.IsNullOrEmpty(malbersWanted))
+                link.EnableInput(malbersWanted, false);
+            _mutedMalbersInputs = malbersWanted;
+        }
+
+        /// <summary>
+        /// Removes Steve's unarmed punching. The left mouse button is the throw now, and Malbers
+        /// drove the punch from it through a combo (Combo Starter on Action1, playing the Attack1
+        /// mode). Both are switched off at the source rather than masked, so no route back into a
+        /// punch remains - with or without a body in hand.
+        /// </summary>
+        void RemoveMalbersPunch()
+        {
+            if (_punchRemoved || animal == null)
+                return;
+            _punchRemoved = true;
+
+            animal.Mode_Disable("Attack1");
+
+            if (steveRoot == null)
+                return;
+            foreach (var combo in steveRoot.GetComponentsInChildren<ComboManager>(true))
+            {
+                if (combo != null)
+                    combo.enabled = false;
+            }
+        }
+
+        #endregion
 
 #if UNITY_EDITOR
         public void EditorWire(

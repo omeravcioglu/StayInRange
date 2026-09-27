@@ -17,11 +17,15 @@ namespace CollarCali
 
         public static FpsNetworkBridge FindLocalBridge()
         {
-            if (FusionConnection.Instance != null &&
-                FusionConnection.Instance.TryGetLocalPlayerComponent(out FpsNetworkBridge bridge))
+            // FusionConnection exists in the Menu before any runner does, and its lookup dereferences
+            // the runner unchecked - which threw on every frame the world markers asked.
+            var connection = FusionConnection.Instance;
+            if (connection != null && connection.Runner != null && connection.Runner.IsRunning &&
+                connection.TryGetLocalPlayerComponent(out FpsNetworkBridge bridge))
                 return bridge;
 
-            foreach (var b in Object.FindObjectsByType<FpsNetworkBridge>(FindObjectsSortMode.None))
+            // The registry rather than a scene search: the markers ask every frame.
+            foreach (var b in FpsNetworkBridge.All)
             {
                 if (b != null && b.IsLocalOwner)
                     return b;

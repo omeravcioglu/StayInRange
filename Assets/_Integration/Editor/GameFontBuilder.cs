@@ -11,7 +11,11 @@ namespace CollarCali.EditorTools
     /// <summary>
     /// Puts the game on one pair of fonts: Knewave for display, Outfit for body text.
     ///
-    /// Run <b>Tools ▸ CollarCali ▸ Apply Game Fonts</b>.
+    /// RETIRED - no longer on the Tools menu. The UI redesign moved body text to Coming Soon and
+    /// replaces the vendor UI instead of retyping it; Tools/CollarCali/UI/Build Theme
+    /// (UiThemeBuilder) now builds the fonts and points GameFontSet at them. This tool rewrote every
+    /// Cowsins and CMP prefab in place (undone by any vendor update) and re-saved each build scene,
+    /// the 23.8 MB Game scene included. Kept for reference until the migration is finished.
     ///
     /// WHY THIS IS A TOOL AND NOT A FIND-AND-REPLACE: every TMP_Text references a font asset AND a
     /// material built from that font's atlas. Swapping the font guid in the YAML leaves the old
@@ -49,7 +53,6 @@ namespace CollarCali.EditorTools
             "Assets/Clean Multiplayer Pro",
         };
 
-        [MenuItem("Tools/CollarCali/Apply Game Fonts")]
         public static void Apply()
         {
             if (!EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo())

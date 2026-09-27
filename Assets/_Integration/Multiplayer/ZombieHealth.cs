@@ -94,6 +94,9 @@ namespace CollarCali
                 return;
             }
 
+            // The shooter's own feedback - hitmarker, killfeed - before the damage goes anywhere.
+            CombatFeedback.ReportHit(gameObject, damage, isHeadshot, IsDeadForFeedback);
+
             if (showBloodOnHit && !IsDead && damage > 0f)
                 SprayBlood(isHeadshot, ZombieBloodFx.Kind.Hit);
 
@@ -109,6 +112,20 @@ namespace CollarCali
 #endif
 
             ApplyLocal(damage, isHeadshot);
+        }
+
+        /// <summary>
+        /// Dead as far as the shooter can tell: the networked actor's flag in a session (health
+        /// lives on the master), this component's own otherwise.
+        /// </summary>
+        bool IsDeadForFeedback()
+        {
+#if CMPSETUP_COMPLETE
+            var actor = NetworkWorldActor.FindFor(gameObject);
+            if (actor != null && actor.Object != null && actor.Object.IsValid)
+                return actor.IsDead;
+#endif
+            return IsDead;
         }
 
         /// <summary>Called by the actor on the state authority once damage has been routed.</summary>
@@ -134,7 +151,9 @@ namespace CollarCali
             Health = Mathf.Max(0f, Health - dealt);
 
             if (showDamageNumbers)
-                Scene2DamagePopup.Show(transform.position + Vector3.up * 1.6f, Mathf.RoundToInt(dealt));
+                // The shooter's HUD shows the number on their own machine; this is the fallback.
+                if (!CombatFeedback.HasListeners)
+                    Scene2DamagePopup.Show(transform.position + Vector3.up * 1.8f, Mathf.RoundToInt(dealt));
 
             if (Health > 0f)
             {

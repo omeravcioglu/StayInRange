@@ -16,11 +16,24 @@ namespace CollarCali
 
         public static void Show()
         {
+#if CMPSETUP_COMPLETE
+            // The redesigned HUD draws YOU ARE GRABBED! itself (board 07); this overlay is the
+            // fallback without it, e.g. playing the level offline.
+            if (UI.MomentDirector.Instance != null)
+            {
+                UI.MomentDirector.Instance.SetGrabbed(true);
+                return;
+            }
+#endif
             Ensure().SetVisible(true);
         }
 
         public static void Hide()
         {
+#if CMPSETUP_COMPLETE
+            if (UI.MomentDirector.Instance != null)
+                UI.MomentDirector.Instance.SetGrabbed(false);
+#endif
             if (_instance != null)
                 _instance.SetVisible(false);
         }

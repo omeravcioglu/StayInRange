@@ -24,27 +24,37 @@ namespace CollarCali
         float _age;
         TMP_Text _text;
 
-        public static void Show(Vector3 worldPosition, int amount)
+        public static void Show(Vector3 worldPosition, int amount) => Show(worldPosition, amount, headshot: false);
+
+        /// <summary>
+        /// A number rising from <paramref name="worldPosition"/> (pass the head, not the feet).
+        /// Gold as the design has it; a headshot gets its own look - bigger, hotter, with a "!" -
+        /// because headshots already do double damage and the player should see why.
+        /// </summary>
+        public static void Show(Vector3 worldPosition, int amount, bool headshot)
         {
             var go = new GameObject("DamageNumber");
-            go.transform.position = worldPosition + Vector3.up * 2.1f;
-
+            go.transform.position = worldPosition + Random.insideUnitSphere * 0.15f;
             // The 3D TextMeshPro, not the UGUI one: this lives in the world, not on a canvas.
             var text = go.AddComponent<TextMeshPro>();
-            text.text = amount.ToString();
-            text.fontSize = 5f;
+            text.text = headshot ? amount + "!" : amount.ToString();
+            text.fontSize = headshot ? 6.5f : 5f;
             text.alignment = TextAlignmentOptions.Center;
-            text.color = new Color(1f, 0.85f, 0.2f, 1f);
+            text.color = headshot ? new Color(1f, 0.54f, 0.24f, 1f) : new Color(1f, 0.83f, 0.28f, 1f);
             text.textWrappingMode = TextWrappingModes.NoWrap;
             text.raycastTarget = false;
-
             // Sized so a three-digit number still fits; TMP would otherwise wrap or clip it against
             // the default rect.
             text.rectTransform.sizeDelta = new Vector2(6f, 2f);
 
-            var fonts = GameFontSet.Load();
-            if (fonts != null && fonts.display != null)
-                text.font = fonts.display;
+            // The redesign's display face with its ink rim, so the number reads against anything.
+            var theme = UI.UiTheme.Active;
+            var font = theme.GetFont(UI.FontRole.Display);
+            if (font != null)
+                text.font = font;
+            var ink = theme.GetInkMaterial(UI.FontRole.Display, UI.Ink.Heavy);
+            if (ink != null)
+                text.fontSharedMaterial = ink;
 
             go.AddComponent<Scene2DamagePopup>()._text = text;
         }

@@ -49,13 +49,39 @@ namespace CollarCali
         [Networked] public NetworkBool IsThirdPerson { get; set; }
 
         /// <summary>
-        /// Who is carrying this player's body, or None when it is lying on the floor.
+        /// Who is holding this player's body in a telekinetic grip, or None.
         ///
         /// Lives on the DEAD player rather than on the carrier, which is what makes two survivors
-        /// grabbing the same body resolve cleanly: both requests arrive at one authority, and the
-        /// second one finds the slot already taken.
+        /// grabbing (or catching) the same body resolve cleanly: every request arrives at one
+        /// authority - the dead player's own machine - and only the first finds the slot free.
         /// </summary>
         [Networked] public PlayerRef CarriedBy { get; set; }
+
+        /// <summary>
+        /// Whose machine is simulating this body right now, or None for the dead player's own.
+        /// The carrier while it is held; the thrower while it flies; None once it lies still.
+        /// </summary>
+        [Networked] public PlayerRef BodyDriver { get; set; }
+
+        /// <summary>The body's <see cref="BodyPhase"/>, as a byte.</summary>
+        [Networked] public byte BodyPhaseValue { get; set; }
+
+        /// <summary>
+        /// Bumped on every change of who holds or simulates the body. Requests carry the epoch the
+        /// sender saw, and anything stale is refused - two players catching the same throw both send
+        /// the same epoch, and only the first one to arrive still matches.
+        /// </summary>
+        [Networked] public int BodyEpoch { get; set; }
+
+        // The pose of the body THIS player's machine is simulating, if any - their own corpse while
+        // it lies loose, or a teammate's while they carry or throw it. Written by this player only,
+        // on their own object, which is how a carrier can publish a body they have no authority over.
+        [Networked] public NetworkId DrivenBody { get; set; }
+        [Networked] public Vector3 DrivenHipsPosition { get; set; }
+        [Networked] public Quaternion DrivenHipsRotation { get; set; }
+        [Networked] public Vector3 DrivenChestPosition { get; set; }
+        [Networked] public Quaternion DrivenChestRotation { get; set; }
+        [Networked] public Vector3 DrivenVelocity { get; set; }
         [Networked] public int ColorIndex { get; set; }
 
         // Which character skin this player chose in the lobby. Replicated so every machine dresses
@@ -93,10 +119,14 @@ namespace CollarCali
         NetworkTransform _networkTransform;
         ChangeDetector _identityChanges;
         int _appliedColorIndex = int.MinValue;
+        int _appliedSteveColorIndex = int.MinValue;
         int _appliedCharacterIndex = int.MinValue;
         Transform _creepHold;
         Transform _creepHoldOldParent;
         bool _creepGrabLocked;
+
+        /// <summary>A creep holds this player: control stays off until it lets go.</summary>
+        public bool IsHeldByCreep => _creepGrabLocked;
         bool _animParamsProbed;
         bool _animHasAim;
         bool _animHasReload;
@@ -115,6 +145,44 @@ namespace CollarCali
         public bool IsMalbersThirdPerson => _malbersThirdPerson;
         public DualPlayerController DualPlayer => _dual;
 
+        /// <summary>
+        /// The player this object belongs to. State authority, not input authority: players are
+        /// spawned in shared mode without an input authority, so that one reads None for everybody.
+        /// </summary>
+        public PlayerRef Owner => Object != null ? Object.StateAuthority : PlayerRef.None;
+
+        /// <summary>Every spawned player, living or dead. Kept here so per-frame lookups never scan the scene.</summary>
+        public static readonly List<FpsNetworkBridge> All = new List<FpsNetworkBridge>();
+
+        public static FpsNetworkBridge FindByPlayer(PlayerRef player)
+        {
+            if (player == PlayerRef.None)
+                return null;
+
+            for (int i = 0; i < All.Count; i++)
+            {
+                var bridge = All[i];
+                if (bridge != null && bridge.Object != null && bridge.Object.IsValid &&
+                    bridge.Object.StateAuthority == player)
+                    return bridge;
+            }
+
+            return null;
+        }
+
+        /// <summary>The name to show for this player, falling back to their slot when they have none.</summary>
+        public string DisplayName
+        {
+            get
+            {
+                var stats = GetComponent<AvocadoShark.PlayerStats>();
+                var name = stats != null ? stats.PlayerName.ToString().Trim('\0', ' ', '\r', '\n') : string.Empty;
+                if (!string.IsNullOrEmpty(name))
+                    return name;
+                return Object != null ? "Player " + Object.StateAuthority.PlayerId : "Player";
+            }
+        }
+
         void Awake()
         {
             SetRemoteBodyVisible(true);
@@ -122,6 +190,9 @@ namespace CollarCali
 
         public override void Spawned()
         {
+            if (!All.Contains(this))
+                All.Add(this);
+
             // Only the owner needs the local Cowsins FPS stack (camera, input, UI, manager singletons).
             // Proxies used to instantiate it too and then disable it - but its Awake had already run,
             // so the proxy's UIController/PoolManager singletons clobbered the owner's, leaving the
@@ -144,6 +215,7 @@ namespace CollarCali
                 HookShootEvents(true);
                 EnsureDualPlayer();
                 EnsureLocalFlashlight();
+                EnsureTelekinesis();
                 // Steve exists now (EnsureDualPlayer builds it), so dress both the body others see
                 // and the owner's own third-person mesh in the chosen skin.
                 ApplyCharacterSkin(CharacterIndex);
@@ -186,14 +258,25 @@ namespace CollarCali
 
         public override void Despawned(NetworkRunner runner, bool hasState)
         {
+            All.Remove(this);
             HookShootEvents(false);
             CleanupDetachedFps();
         }
 
         void OnDestroy()
         {
+            All.Remove(this);
             HookShootEvents(false);
             CleanupDetachedFps();
+        }
+
+        /// <summary>The local player's lift / throw / catch controller. Only the local player gets one.</summary>
+        void EnsureTelekinesis()
+        {
+            var telekinesis = GetComponent<BodyTelekinesis>();
+            if (telekinesis == null)
+                telekinesis = gameObject.AddComponent<BodyTelekinesis>();
+            telekinesis.Bind(this);
         }
 
         void EnsureFpsInstance()
@@ -220,6 +303,34 @@ namespace CollarCali
                 return;
 
             CaptureAnimationState();
+            PublishDrivenBody();
+        }
+
+        /// <summary>
+        /// Publishes the pose of whichever body this machine is simulating, on this player's own
+        /// object. That is how a carrier or thrower - who has no authority over the dead player's
+        /// object - still gets to tell everyone where the body is.
+        /// </summary>
+        void PublishDrivenBody()
+        {
+            var simulated = PlayerDownState.LocallySimulated;
+            if (simulated == null || !simulated.IsSimulatedHere || simulated.Bridge == null ||
+                simulated.Bridge.Object == null || !simulated.Bridge.Object.IsValid)
+            {
+                if (DrivenBody != default)
+                    DrivenBody = default;
+                return;
+            }
+
+            simulated.ReadPublishedPose(out var hips, out var hipsRotation, out var chest,
+                out var chestRotation, out var velocity);
+
+            DrivenBody = simulated.Bridge.Object.Id;
+            DrivenHipsPosition = hips;
+            DrivenHipsRotation = hipsRotation;
+            DrivenChestPosition = chest;
+            DrivenChestRotation = chestRotation;
+            DrivenVelocity = velocity;
         }
 
         public override void Render()
@@ -259,11 +370,19 @@ namespace CollarCali
 
             if (dead)
             {
-                var velocity = _fpsRigidbody != null ? _fpsRigidbody.linearVelocity : Vector3.zero;
+                // Taken before the controllers are parked, which zeroes it.
+                var velocity = _dual != null ? _dual.GetBodyVelocity()
+                    : _fpsRigidbody != null ? _fpsRigidbody.linearVelocity : Vector3.zero;
+
+                if (HasStateAuthority)
+                {
+                    // The body starts life loose and simulated here, whatever was true of the last one.
+                    ResetBodyAuthority();
+                    EnterDownedLocal();
+                }
+
                 SetRemoteBodyVisible(true);
                 down.EnterDown(HasStateAuthority, velocity);
-                if (HasStateAuthority)
-                    EnterDownedLocal();
             }
             else
             {
@@ -271,7 +390,9 @@ namespace CollarCali
                 if (HasStateAuthority)
                     ExitDownedLocal();
                 else
-                    SetRemoteBodyVisible(!IsThirdPerson);
+                    // A living player is drawn with this body on every other machine in BOTH modes:
+                    // the Malbers character exists only on its owner's machine.
+                    SetRemoteBodyVisible(true);
             }
         }
 
@@ -282,19 +403,21 @@ namespace CollarCali
 
             if (!HasStateAuthority)
             {
-                // Proxies place a downed body too: the corpse is simulated locally on every machine
-                // and nudged back towards the replicated position when the two disagree.
-                _downState?.Tick(false);
+                // Every machine decides for itself whether it is the one simulating this body or one
+                // following the machine that is.
+                if (_appliedDown)
+                    _downState?.Tick();
                 return;
             }
 
             if (_appliedDown && _downState != null)
             {
-                ReleaseCarryIfCarrierGone();
-                _downState.Tick(true);
-                // The root follows the hips rather than a gameplay position, which is what tells
-                // every other machine - and the collar - where this body ended up.
-                _downState.DriveRootFromBody(transform);
+                MaintainBodyAuthority();
+                _downState.Tick();
+                // The root - and the collar anchor on it - follows the body wherever it is carried,
+                // thrown or dropped. The body is detached from the root while dead, so moving the
+                // root no longer drags the corpse along with it.
+                transform.position = _downState.BodyPosition;
                 return;
             }
 
@@ -564,10 +687,12 @@ namespace CollarCali
                 return;
 
             // A team failure does not resurrect anybody. A dead player's body is dragged back to the
-            // checkpoint along with the living, so the collar is satisfied and somebody still has to
-            // carry them to a station - otherwise separation would be a free revive.
+            // checkpoint along with the living, so the collar is satisfied - otherwise separation
+            // would be a free revive. Whoever was holding it lets go, and the body comes back under
+            // this machine's simulation so the teleport is the one everybody follows.
             if (IsDead)
             {
+                ResetBodyAuthority();
                 AuthorityTeleport(position, yawDegrees);
                 _downState?.TeleportBody(position + Vector3.up * 0.4f);
                 return;
@@ -752,8 +877,10 @@ namespace CollarCali
             _dual.BindNetworkOwner(this, OnDualModeChanged);
             _dual.WireExisting(fpsRoot, null, null);
 
-            if (GetComponent<PlayerDistanceHUD>() == null)
-                gameObject.AddComponent<PlayerDistanceHUD>();
+            // The redesigned HUD: one for both controllers, replacing Cowsins' and the old
+            // distance list.
+            if (GetComponent<UI.HudRoot>() == null)
+                gameObject.AddComponent<UI.HudRoot>();
         }
 
         void OnDualModeChanged(bool thirdPerson)
@@ -774,6 +901,12 @@ namespace CollarCali
 
         static int ReadMenuColorIndex()
         {
+            // The colour picked in the lobby; the master still separates any two that match
+            // (TeamDistanceManager.EnsureUniqueColors).
+            int picked = PlayerColorPalette.SavedChoice;
+            if (picked >= 0)
+                return picked;
+
             if (FusionConnection.Instance != null &&
                 FusionConnection.Instance.characterScriptableObject != null)
             {
@@ -815,33 +948,53 @@ namespace CollarCali
 
             if (_dual != null && _dual.SteveRoot != null)
                 CharacterSelection.Apply(_dual.SteveRoot, index);
+
+            // A skin swaps the materials the colour was painted on; paint the new ones.
+            _appliedColorIndex = int.MinValue;
+            _appliedSteveColorIndex = int.MinValue;
         }
 
+        /// <summary>
+        /// Dresses and paints this player on every machine. Compared against what is applied rather
+        /// than read off the change detector alone: a proxy never sees its first values as a change,
+        /// so its body would otherwise keep the default look. Both calls return at once when nothing
+        /// moved.
+        /// </summary>
         void DetectIdentityChanges()
         {
             if (_identityChanges == null)
                 return;
 
-            foreach (var change in _identityChanges.DetectChanges(this))
+            ApplyCharacterSkin(CharacterIndex);
+            ApplyColorTint(ColorIndex);
+        }
+
+        /// <summary>
+        /// Everyone shares one body; the colour is who they are. Paints the body the others see and,
+        /// on the owner's machine, their own third-person mesh.
+        /// </summary>
+        void ApplyColorTint(int index)
+        {
+            if (index != _appliedColorIndex && remoteBody != null)
             {
-                if (change == nameof(CharacterIndex) || change == nameof(ColorIndex))
-                    ApplyCharacterSkin(CharacterIndex);
+                _appliedColorIndex = index;
+                if (_remoteRenderers == null)
+                    _remoteRenderers = remoteBody.GetComponentsInChildren<Renderer>(true);
+                Paint(_remoteRenderers, index);
+            }
+
+            var steve = _dual != null ? _dual.SteveRoot : null;
+            if (steve != null && index != _appliedSteveColorIndex)
+            {
+                _appliedSteveColorIndex = index;
+                Paint(steve.GetComponentsInChildren<SkinnedMeshRenderer>(true), index);
             }
         }
 
-        void ApplyColorTint(int index)
+        static void Paint(Renderer[] renderers, int index)
         {
-            if (index == _appliedColorIndex)
-                return;
-            _appliedColorIndex = index;
-
-            if (remoteBody == null)
-                return;
-            if (_remoteRenderers == null)
-                _remoteRenderers = remoteBody.GetComponentsInChildren<Renderer>(true);
-
             var color = PlayerColorPalette.Get(index);
-            foreach (var renderer in _remoteRenderers)
+            foreach (var renderer in renderers)
             {
                 if (renderer == null)
                     continue;
@@ -864,6 +1017,13 @@ namespace CollarCali
         bool _appliedDown;
 
         public bool IsCarried => CarriedBy != PlayerRef.None;
+        public BodyPhase Phase => (BodyPhase)BodyPhaseValue;
+
+        /// <summary>The machine simulating this body: the driver when there is one, otherwise the owner.</summary>
+        public PlayerRef BodySimulator => BodyDriver != PlayerRef.None ? BodyDriver : Owner;
+
+        /// <summary>This player's ragdoll and downed state. Exists on every machine once the player has been rendered.</summary>
+        public PlayerDownState DownState => _downState;
 
         /// <summary>
         /// Adds the ragdoll and downed-state components on first use rather than requiring them on
@@ -880,7 +1040,8 @@ namespace CollarCali
             _downState = GetComponent<PlayerDownState>();
             if (_downState == null)
             {
-                gameObject.AddComponent<PlayerRagdoll>();
+                if (GetComponent<PlayerRagdoll>() == null)
+                    gameObject.AddComponent<PlayerRagdoll>();
                 _downState = gameObject.AddComponent<PlayerDownState>();
             }
 
@@ -888,21 +1049,31 @@ namespace CollarCali
             return _downState;
         }
 
-        /// <summary>Hands the local player over to the spectator camera.</summary>
+        /// <summary>
+        /// Hands the local player over to the spectator camera: the living controllers are parked -
+        /// whichever of first or third person was active - and their input, camera and HUD go with
+        /// them. Nothing of the living character is left to collide with the corpse.
+        /// </summary>
         void EnterDownedLocal()
         {
+            if (_dual != null)
+                _dual.EnterDowned();
+
             // Takes the camera, the input and the HUD in one move - the same switch that is used to
             // decide what belongs to the local player in the first place.
             SetLocalOnlyEnabled(false);
         }
 
-        /// <summary>Gives the local player their body back after a revive.</summary>
+        /// <summary>Gives the local player their body back after a revive, in first person.</summary>
         void ExitDownedLocal()
         {
             SetLocalOnlyEnabled(true);
             // Hidden again because they are back behind their own eyes; the third-person mesh is for
             // everybody else to look at.
             SetRemoteBodyVisible(false);
+
+            if (_dual != null)
+                _dual.ExitDowned();
 
             if (_fpsRigidbody != null)
             {
@@ -914,68 +1085,60 @@ namespace CollarCali
                 UIController.Instance.LockMouse();
         }
 
-        FpsNetworkBridge _cachedCarrier;
-        PlayerRef _cachedCarrierRef;
-
         /// <summary>
-        /// The player currently carrying this body, or null when nobody is.
-        ///
-        /// Cached against the networked PlayerRef, because this is read every frame while a body is
-        /// down and a scene-wide search per frame per corpse is not worth paying for.
+        /// Puts the body back under this machine's own simulation with nobody holding it. Owner only.
         /// </summary>
-        public FpsNetworkBridge ResolveCarrier()
+        void ResetBodyAuthority()
         {
-            if (CarriedBy == PlayerRef.None)
-            {
-                _cachedCarrier = null;
-                _cachedCarrierRef = PlayerRef.None;
-                return null;
-            }
-
-            if (_cachedCarrierRef == CarriedBy && _cachedCarrier != null &&
-                _cachedCarrier.Object != null && _cachedCarrier.Object.IsValid)
-            {
-                return _cachedCarrier.IsDead ? null : _cachedCarrier;
-            }
-
-            _cachedCarrier = null;
-            _cachedCarrierRef = CarriedBy;
-
-            foreach (var bridge in FindObjectsByType<FpsNetworkBridge>(FindObjectsSortMode.None))
-            {
-                if (bridge == null || bridge == this || bridge.Object == null || !bridge.Object.IsValid)
-                    continue;
-                if (bridge.Object.InputAuthority != CarriedBy)
-                    continue;
-
-                _cachedCarrier = bridge;
-                // A dead carrier drops what they were holding.
-                return bridge.IsDead ? null : bridge;
-            }
-
-            return null;
-        }
-
-        /// <summary>
-        /// Drops the body if whoever was carrying it has gone - disconnected, or died themselves.
-        /// Without this a body could be locked to a carrier who no longer exists and never be
-        /// pickable again.
-        /// </summary>
-        void ReleaseCarryIfCarrierGone()
-        {
-            if (CarriedBy != PlayerRef.None && ResolveCarrier() == null)
-                CarriedBy = PlayerRef.None;
-        }
-
-        /// <summary>Asks this body's owner to be picked up or put down by <paramref name="carrier"/>.</summary>
-        public void RequestCarry(FpsNetworkBridge carrier, bool carry)
-        {
-            if (carrier == null || carrier.Object == null || !Object || !Object.IsValid)
+            if (!HasStateAuthority)
                 return;
-            RPC_RequestCarry(carrier.Object.InputAuthority, carry);
+
+            CarriedBy = PlayerRef.None;
+            BodyDriver = PlayerRef.None;
+            BodyPhaseValue = (byte)BodyPhase.Loose;
+            BodyEpoch++;
         }
 
-        /// <summary>Asks this body's owner to be revived at a station.</summary>
+        /// <summary>
+        /// The owner's standing duty while dead: if whoever is simulating the body has gone - left
+        /// the session, or died themselves - take it back, so a body can never be stranded with a
+        /// simulator that no longer exists.
+        /// </summary>
+        void MaintainBodyAuthority()
+        {
+            if (!HasStateAuthority || BodyDriver == PlayerRef.None)
+                return;
+
+            var driver = FindByPlayer(BodyDriver);
+            if (driver == null || driver.IsDead)
+                ResetBodyAuthority();
+        }
+
+        /// <summary>Asks this body's owner to put it in the requesting player's grip.</summary>
+        public void RequestHold(int epoch, bool catching)
+        {
+            if (!Object || !Object.IsValid)
+                return;
+            RPC_RequestHold(epoch, catching);
+        }
+
+        /// <summary>Tells this body's owner that its holder let go - dropped, or threw it.</summary>
+        public void RequestRelease(int epoch, bool thrown)
+        {
+            if (!Object || !Object.IsValid)
+                return;
+            RPC_RequestRelease(epoch, thrown);
+        }
+
+        /// <summary>Tells this body's owner that its flight is over and it can take the simulation back.</summary>
+        public void RequestBodyRest(int epoch)
+        {
+            if (!Object || !Object.IsValid)
+                return;
+            RPC_RequestBodyRest(epoch);
+        }
+
+        /// <summary>Asks this body's owner to be revived. Kept for the revival mechanic.</summary>
         public void RequestRevive(Vector3 position, float yawDegrees)
         {
             if (!Object || !Object.IsValid)
@@ -984,31 +1147,60 @@ namespace CollarCali
         }
 
         /// <summary>
-        /// Decided in one place, so simultaneous grabs cannot both succeed: whoever's request is
-        /// processed first takes the body, and the other finds it already taken.
+        /// Lifting and catching are the same request: put the body in my grip. Granted only while
+        /// nobody holds it, only if the sender saw the current epoch, and only to a living player -
+        /// so of two players catching the same throw, exactly one succeeds.
         /// </summary>
         [Rpc(RpcSources.All, RpcTargets.StateAuthority)]
-        void RPC_RequestCarry(PlayerRef carrier, NetworkBool carry)
+        void RPC_RequestHold(int epoch, NetworkBool catching, RpcInfo info = default)
         {
-            if (!IsDead)
+            if (!IsDead || CarriedBy != PlayerRef.None || epoch != BodyEpoch)
                 return;
 
-            if (carry)
-            {
-                if (CarriedBy != PlayerRef.None)
-                    return;
-                CarriedBy = carrier;
+            var requester = FindByPlayer(info.Source);
+            if (requester == null || requester == this || requester.IsDead)
                 return;
-            }
 
-            // Only the player actually holding it may put it down.
-            if (CarriedBy == carrier)
-                CarriedBy = PlayerRef.None;
+            // A catch is only valid while the body is actually in flight; a lift works either way.
+            if (catching && Phase != BodyPhase.Thrown)
+                return;
+
+            CarriedBy = info.Source;
+            BodyDriver = info.Source;
+            BodyPhaseValue = (byte)BodyPhase.Held;
+            BodyEpoch++;
         }
 
         /// <summary>
-        /// The IsDead check is the duplicate-revive guard: two survivors pressing the same station
-        /// on the same frame both arrive here, and the second finds the player already alive.
+        /// The holder let go. The body goes into flight - a drop is just a throw with no speed - and
+        /// stays simulated by the same machine until it lands or somebody catches it.
+        /// </summary>
+        [Rpc(RpcSources.All, RpcTargets.StateAuthority)]
+        void RPC_RequestRelease(int epoch, NetworkBool thrown, RpcInfo info = default)
+        {
+            if (!IsDead || CarriedBy != info.Source || epoch != BodyEpoch)
+                return;
+
+            CarriedBy = PlayerRef.None;
+            BodyPhaseValue = (byte)BodyPhase.Thrown;
+            BodyEpoch++;
+        }
+
+        /// <summary>A flight has ended. The owner's machine takes the simulation back from the thrower.</summary>
+        [Rpc(RpcSources.All, RpcTargets.StateAuthority)]
+        void RPC_RequestBodyRest(int epoch, RpcInfo info = default)
+        {
+            if (!IsDead || BodyDriver != info.Source || CarriedBy != PlayerRef.None || epoch != BodyEpoch)
+                return;
+
+            BodyDriver = PlayerRef.None;
+            BodyPhaseValue = (byte)BodyPhase.Loose;
+            BodyEpoch++;
+        }
+
+        /// <summary>
+        /// The IsDead check is the duplicate-revive guard: two survivors reviving the same body on
+        /// the same frame both arrive here, and the second finds the player already alive.
         /// </summary>
         [Rpc(RpcSources.All, RpcTargets.StateAuthority)]
         void RPC_RequestRevive(Vector3 position, float yawDegrees)
@@ -1022,9 +1214,12 @@ namespace CollarCali
         /// <summary>
         /// Brings this player back at a position, whatever put them down.
         ///
-        /// Shared by the revive station and the team wipe so there is one definition of what coming
-        /// back means - body reassembled, control returned, health restored - rather than two that
-        /// could drift apart.
+        /// THE REVIVAL HOOK. The dead player keeps their network identity - this object, its state
+        /// authority, their name and colour - for the whole time they are dead, and the ragdoll is
+        /// their own "Player Render" body rather than a spawned copy, so reviving is purely a change
+        /// of state on this object: whoever held the body lets go, the body is reassembled where it
+        /// is told to stand, and control comes back. Shared by the team wipe and by any future
+        /// revive mechanic so there is one definition of coming back.
         ///
         /// Only meaningful on the state authority, which is the machine actually playing this
         /// character; everyone else finds out through IsDead.
@@ -1034,7 +1229,7 @@ namespace CollarCali
             if (!HasStateAuthority)
                 return;
 
-            CarriedBy = PlayerRef.None;
+            ResetBodyAuthority();
 
             // Teleported before and after the respawn, the same as the team-failure routine: Cowsins
             // moves the body itself during Respawn, so the second call is what makes the position
@@ -1353,23 +1548,20 @@ namespace CollarCali
 
         void ApplyProxyVisualState()
         {
-            // The corpse stays on screen now. It is not a hidden player any more, it is an object
-            // teammates have to find, pick up and carry to a revive station.
+            // The corpse stays on screen. It is not a hidden player, it is an object teammates have
+            // to find, lift and carry.
             if (IsDead)
             {
                 SetRemoteBodyVisible(true);
                 return;
             }
 
-            // A player in third person is represented by their own Malbers body. Drawing this FPS
-            // mesh as well put a second character - head included - standing inside theirs, which is
-            // the same leftover-geometry bug the owner saw locally, just from the other side.
-            if (IsThirdPerson)
-            {
-                SetRemoteBodyVisible(false);
-                return;
-            }
-
+            // Drawn in BOTH modes. This used to be hidden while the player was in third person, on
+            // the assumption that their Malbers character represented them - but that character
+            // exists only on its owner's machine and is not networked, so everyone else saw nothing
+            // at all. This body is the one networked representation of the player: its root follows
+            // whichever controller is active and its animation comes from the same replicated
+            // parameters in both modes, so it is the same character whichever mode they are in.
             SetRemoteBodyVisible(true);
             EnsureRemoteWeaponVisual();
 

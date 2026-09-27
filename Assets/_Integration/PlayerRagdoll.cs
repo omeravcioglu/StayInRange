@@ -9,7 +9,7 @@ namespace CollarCali
     /// Built from the Animator's HUMANOID bones rather than by name. These are Meshy exports whose
     /// skeleton is a trap to read by name - the spine is numbered downwards, so "Spine02" is the
     /// bone on the hips and "Spine" is the chest - but the avatar is humanoid, so
-    /// GetBoneTransform gives the right bone every time and works across all four character skins.
+    /// GetBoneTransform gives the right bone every time and works across every character skin.
     ///
     /// THREE THINGS ABOUT THIS RIG THAT DICTATE THE CODE:
     ///
@@ -19,19 +19,19 @@ namespace CollarCali
     /// 2. Every bone has a lossyScale of 100, because the Armature is scaled up by 100. Collider
     ///    sizes are authored in LOCAL units and multiplied by that scale at simulation time, so a
     ///    hand-written radius of 0.1 would be a ten metre capsule. Every radius here is a world size
-    ///    divided by the bone's scale. Lengths taken from localPosition are already local and are
-    ///    used as they are.
+    ///    divided by the bone's scale.
     ///
-    /// 3. "Player Render" is never reparented. FpsNetworkBridge.ConfigureProxy documents that
-    ///    reparenting it breaks proxy animation, because the Animator on the root resolves its bones
-    ///    by path. Instead the body's world pose is captured and restored around the frame's root
-    ///    move (see PinWorldPose/RestoreWorldPose), which cancels out the root dragging its children
-    ///    and leaves the physics in world space.
+    /// 3. While dead, "Player Render" is DETACHED from the network root and put back on revive. The
+    ///    root is moved every frame - by the network on other machines, and by the owner to follow
+    ///    the hips - and a body parented under it was dragged along a second time on top of its own
+    ///    physics. Reparenting is only unsafe while the root's Animator is running (it resolves bones
+    ///    by path), and it is switched off for the whole time the body is detached; it is re-enabled
+    ///    and rebound only after the body is back in place.
     ///
-    /// Physics runs on every machine, the way MagicianRagdoll already does it: the tumble differs
-    /// slightly per client, which does not matter for a corpse, and drift is pulled back whenever it
-    /// gets far enough to matter. While a body is carried it goes kinematic everywhere and is placed
-    /// exactly, because that is the part players interact with.
+    /// ONE SIMULATION, MANY COPIES. Exactly one machine simulates a body at any moment (see
+    /// PlayerDownState): that copy is fully dynamic. Every other machine holds the hips and chest on
+    /// the pose that machine replicates and lets only the limbs swing, so all players see the body
+    /// in the same place while the arms and legs still move naturally.
     /// </summary>
     [DisallowMultipleComponent]
     public class PlayerRagdoll : MonoBehaviour
@@ -83,26 +83,46 @@ namespace CollarCali
             { HumanBodyBones.RightLowerLeg, 4f },
         };
 
+        const float BaseLinearDamping = 0.15f;
+        const float BaseAngularDamping = 0.25f;
+
         Transform _body;
+        Transform _bodyParent;
         Animator _animator;
         Transform _hips;
 
         readonly Dictionary<HumanBodyBones, Rigidbody> _bodies = new();
+        readonly List<Rigidbody> _bodyList = new();
         readonly List<Collider> _colliders = new();
+
+        Rigidbody _hipsBody;
+        Rigidbody _chestBody;
+        float _totalMass;
 
         bool _built;
         bool _buildFailed;
         bool _active;
-        bool _carried;
-
-        Vector3 _pinnedPosition;
-        Quaternion _pinnedRotation;
+        bool _detached;
+        bool _following;
 
         public bool IsActive => _active;
+        public bool IsFollowing => _following;
         public Transform Hips => _hips;
+        public Rigidbody HipsBody => _hipsBody;
 
-        /// <summary>Where the body actually is. What the owner replicates and what carrying reads.</summary>
+        /// <summary>The upper-body bone the telekinetic grip holds, so the body hangs from its collar.</summary>
+        public Rigidbody ChestBody => _chestBody != null ? _chestBody : _hipsBody;
+
+        public IReadOnlyList<Rigidbody> Bodies => _bodyList;
+        public IReadOnlyList<Collider> Colliders => _colliders;
+        public float TotalMass => _totalMass;
+
+        /// <summary>Where the body actually is. What gets replicated and what everything aims at.</summary>
         public Vector3 BodyPosition => _hips != null ? _hips.position : transform.position;
+
+        /// <summary>Velocity of the body as a whole, taken from the hips.</summary>
+        public Vector3 BodyVelocity =>
+            _hipsBody != null && !_hipsBody.isKinematic ? _hipsBody.linearVelocity : Vector3.zero;
 
         /// <summary>
         /// Points this at the visible character mesh and the Animator that drives it.
@@ -116,9 +136,18 @@ namespace CollarCali
                 return;
 
             _body = body;
+            _bodyParent = body.parent;
             _animator = GetComponent<Animator>();
             if (_animator == null)
                 _animator = GetComponentInChildren<Animator>(true);
+        }
+
+        void OnDestroy()
+        {
+            // The network root is going away - the player left, or the object despawned. A body
+            // parked at the scene root would otherwise outlive its owner forever.
+            if (_detached && _body != null)
+                Destroy(_body.gameObject);
         }
 
         #region Build
@@ -134,8 +163,7 @@ namespace CollarCali
             {
                 _buildFailed = true;
                 Debug.LogWarning("[CollarCali] " + name + " has no humanoid Animator, so its body " +
-                                 "cannot ragdoll. Carrying and reviving still work; the body just " +
-                                 "will not go limp.", this);
+                                 "cannot ragdoll. It will stay where it fell and cannot be carried.", this);
                 return false;
             }
 
@@ -157,15 +185,25 @@ namespace CollarCali
                     rigidbody = boneTransform.gameObject.AddComponent<Rigidbody>();
 
                 rigidbody.mass = Masses.TryGetValue(bone, out var mass) ? mass : 3f;
-                rigidbody.linearDamping = 0.15f;
-                rigidbody.angularDamping = 0.25f;
+                rigidbody.linearDamping = BaseLinearDamping;
+                rigidbody.angularDamping = BaseAngularDamping;
                 rigidbody.interpolation = RigidbodyInterpolation.Interpolate;
-                // Speculative rather than ContinuousDynamic: Unity warns about continuous modes on
-                // kinematic bodies, and these spend most of their life kinematic.
+                // Speculative rather than ContinuousDynamic: it is still continuous collision, so a
+                // hard throw cannot tunnel through a wall, but Unity does not complain about it on
+                // the bodies that spend their life kinematic.
                 rigidbody.collisionDetectionMode = CollisionDetectionMode.ContinuousSpeculative;
+                // Extra solver passes keep a chain of joints from stretching and jittering when the
+                // grip pulls on one end of it.
+                rigidbody.solverIterations = 12;
+                rigidbody.solverVelocityIterations = 4;
+                // Overlapping colliders at the moment of death resolve gently instead of launching
+                // the body across the room.
+                rigidbody.maxDepenetrationVelocity = 3f;
                 rigidbody.isKinematic = true;
                 rigidbody.detectCollisions = false;
                 _bodies[bone] = rigidbody;
+                _bodyList.Add(rigidbody);
+                _totalMass += rigidbody.mass;
 
                 var collider = boneTransform.GetComponent<Collider>();
                 if (collider == null)
@@ -176,6 +214,10 @@ namespace CollarCali
                     _colliders.Add(collider);
                 }
             }
+
+            _bodies.TryGetValue(HumanBodyBones.Hips, out _hipsBody);
+            if (!_bodies.TryGetValue(HumanBodyBones.Chest, out _chestBody))
+                _bodies.TryGetValue(HumanBodyBones.Spine, out _chestBody);
 
             foreach (var pair in JointParent)
             {
@@ -267,16 +309,24 @@ namespace CollarCali
 
         #region Activation
 
-        /// <summary>Goes limp, carrying the player's last movement into the fall.</summary>
-        public void Activate(Vector3 velocity)
+        /// <summary>
+        /// Goes limp, carrying the player's last movement into the fall. Returns false when this rig
+        /// cannot ragdoll at all.
+        /// </summary>
+        public bool Activate(Vector3 velocity)
         {
-            if (!Build() || _active)
-                return;
+            if (!Build())
+                return false;
+            if (_active)
+                return true;
 
             _active = true;
+            _following = false;
 
             if (_animator != null)
                 _animator.enabled = false;
+
+            Detach();
 
             foreach (var collider in _colliders)
             {
@@ -284,7 +334,7 @@ namespace CollarCali
                     collider.enabled = true;
             }
 
-            foreach (var rigidbody in _bodies.Values)
+            foreach (var rigidbody in _bodyList)
             {
                 if (rigidbody == null)
                     continue;
@@ -293,6 +343,8 @@ namespace CollarCali
                 rigidbody.linearVelocity = velocity;
                 rigidbody.angularVelocity = Vector3.zero;
             }
+
+            return true;
         }
 
         /// <summary>Stands the body back up and hands the skeleton to the Animator again.</summary>
@@ -302,16 +354,21 @@ namespace CollarCali
                 return;
 
             _active = false;
-            _carried = false;
+            _following = false;
 
-            foreach (var rigidbody in _bodies.Values)
+            foreach (var rigidbody in _bodyList)
             {
                 if (rigidbody == null)
                     continue;
-                rigidbody.linearVelocity = Vector3.zero;
-                rigidbody.angularVelocity = Vector3.zero;
+                if (!rigidbody.isKinematic)
+                {
+                    rigidbody.linearVelocity = Vector3.zero;
+                    rigidbody.angularVelocity = Vector3.zero;
+                }
                 rigidbody.isKinematic = true;
                 rigidbody.detectCollisions = false;
+                rigidbody.linearDamping = BaseLinearDamping;
+                rigidbody.angularDamping = BaseAngularDamping;
             }
 
             foreach (var collider in _colliders)
@@ -320,58 +377,149 @@ namespace CollarCali
                     collider.enabled = false;
             }
 
-            // Re-enabled last: its first update overwrites every bone, which is what puts the
-            // skeleton back into a standing pose once the joints have let go.
+            // Back under the root BEFORE the Animator wakes up: it binds bones by path from the root,
+            // and Rebind below is what makes it pick the skeleton up again.
+            Reattach();
+
             if (_animator != null)
             {
                 _animator.enabled = true;
                 _animator.Rebind();
                 _animator.Update(0f);
             }
+        }
 
-            // The body is a child of the root and was never reparented, so putting it back is just
-            // clearing whatever offset the ragdoll left behind.
-            if (_body != null)
+        void Detach()
+        {
+            if (_detached || _body == null)
+                return;
+
+            _bodyParent = _body.parent;
+            _body.SetParent(null, true);
+            _detached = true;
+        }
+
+        void Reattach()
+        {
+            if (!_detached || _body == null)
+                return;
+
+            _body.SetParent(_bodyParent != null ? _bodyParent : transform, false);
+            _body.localPosition = Vector3.zero;
+            _body.localRotation = Quaternion.identity;
+            _detached = false;
+        }
+
+        #endregion
+
+        #region Simulating and following
+
+        /// <summary>
+        /// Switches between being THE simulation of this body (every bone dynamic) and following the
+        /// machine that is (hips and chest pinned to its replicated pose, limbs left to swing).
+        ///
+        /// <paramref name="inheritedVelocity"/> is applied when taking over the simulation, so a body
+        /// caught mid-flight keeps flying instead of stopping dead on the new machine.
+        /// </summary>
+        public void SetFollowing(bool following, Vector3 inheritedVelocity)
+        {
+            if (!_active || _following == following)
+                return;
+
+            _following = following;
+
+            if (following)
             {
-                _body.localPosition = Vector3.zero;
-                _body.localRotation = Quaternion.identity;
+                SetPinned(_hipsBody, true);
+                SetPinned(_chestBody, true);
+                return;
+            }
+
+            SetPinned(_hipsBody, false);
+            SetPinned(_chestBody, false);
+
+            foreach (var rigidbody in _bodyList)
+            {
+                if (rigidbody == null || rigidbody.isKinematic)
+                    continue;
+                rigidbody.linearVelocity = inheritedVelocity;
+            }
+        }
+
+        static void SetPinned(Rigidbody body, bool pinned)
+        {
+            if (body == null)
+                return;
+
+            if (pinned && !body.isKinematic)
+            {
+                body.linearVelocity = Vector3.zero;
+                body.angularVelocity = Vector3.zero;
+            }
+
+            body.isKinematic = pinned;
+        }
+
+        /// <summary>
+        /// Moves the pinned hips and chest to a replicated pose. Called from FixedUpdate so the
+        /// kinematic bodies sweep there and push the swinging limbs along with them.
+        /// </summary>
+        public void DriveFollower(Vector3 hipsPosition, Quaternion hipsRotation,
+            Vector3 chestPosition, Quaternion chestRotation)
+        {
+            if (!_following || _hipsBody == null)
+                return;
+
+            _hipsBody.MovePosition(hipsPosition);
+            _hipsBody.MoveRotation(hipsRotation);
+
+            if (_chestBody != null && _chestBody != _hipsBody)
+            {
+                _chestBody.MovePosition(chestPosition);
+                _chestBody.MoveRotation(chestRotation);
+            }
+        }
+
+        /// <summary>Loosens or tightens the limbs. Held bodies swing; loose bodies tumble freely.</summary>
+        public void SetLimbDamping(float angularDamping)
+        {
+            foreach (var rigidbody in _bodyList)
+            {
+                if (rigidbody == null || rigidbody == _hipsBody || rigidbody == _chestBody)
+                    continue;
+                rigidbody.angularDamping = angularDamping;
+            }
+        }
+
+        public void ResetLimbDamping() => SetLimbDamping(BaseAngularDamping);
+
+        /// <summary>Launches every bone together, so the body flies as one piece rather than stretching.</summary>
+        public void Launch(Vector3 velocity, Vector3 spin)
+        {
+            foreach (var rigidbody in _bodyList)
+            {
+                if (rigidbody == null || rigidbody.isKinematic)
+                    continue;
+                rigidbody.linearVelocity = velocity;
+                rigidbody.angularVelocity = spin;
             }
         }
 
         /// <summary>
-        /// Remembers the body's world pose before the network root is written this frame.
-        ///
-        /// The root drags its children with it, which would move the ragdoll a second time and send
-        /// the body sliding away from itself. Capturing here and restoring afterwards cancels that
-        /// out without reparenting anything.
-        /// </summary>
-        public void PinWorldPose()
-        {
-            if (_body == null)
-                return;
-            _pinnedPosition = _body.position;
-            _pinnedRotation = _body.rotation;
-        }
-
-        public void RestoreWorldPose()
-        {
-            if (_body == null)
-                return;
-            _body.SetPositionAndRotation(_pinnedPosition, _pinnedRotation);
-        }
-
-        /// <summary>
-        /// Moves the whole body so its hips land on <paramref name="position"/>. Used for carrying,
-        /// for revives, for drift correction, and when a team failure drags everyone back.
+        /// Moves the whole body so its hips land on <paramref name="position"/>. Used for revives,
+        /// team-failure teleports and large network corrections.
         /// </summary>
         public void MoveTo(Vector3 position)
         {
             if (_hips == null || _body == null)
                 return;
 
+            // The transform only: the physics bodies pick the new pose up when transforms sync before
+            // the next step. Writing Rigidbody.position as well would move them twice whenever
+            // auto-sync is on.
             _body.position += position - _hips.position;
 
-            foreach (var rigidbody in _bodies.Values)
+            foreach (var rigidbody in _bodyList)
             {
                 if (rigidbody == null || rigidbody.isKinematic)
                     continue;
@@ -380,38 +528,28 @@ namespace CollarCali
             }
         }
 
-        /// <summary>
-        /// Freezes the body while somebody is carrying it.
-        ///
-        /// Kinematic on every machine, not just the owner's: a carried body that still simulated
-        /// would flail through walls and shove its carrier around, and its position is the one thing
-        /// everybody has to agree on while it is being moved.
-        /// </summary>
-        public void SetCarried(bool carried)
+        /// <summary>Makes a set of colliders - a carrier's own body, say - pass through this one, or stop doing so.</summary>
+        public void IgnoreCollisionsWith(IReadOnlyList<Collider> others, bool ignore)
         {
-            if (!_built || _carried == carried)
+            if (others == null)
                 return;
 
-            _carried = carried;
-
-            foreach (var rigidbody in _bodies.Values)
+            foreach (var mine in _colliders)
             {
-                if (rigidbody == null)
+                if (mine == null)
                     continue;
-                rigidbody.isKinematic = carried || !_active;
-                if (!carried)
-                    continue;
-                rigidbody.linearVelocity = Vector3.zero;
-                rigidbody.angularVelocity = Vector3.zero;
+                foreach (var other in others)
+                {
+                    if (other != null && other != mine)
+                        Physics.IgnoreCollision(mine, other, ignore);
+                }
             }
         }
 
         /// <summary>
-        /// Puts the bones on a layer the interact raycast ignores.
-        ///
-        /// The player's interact mask includes Default, and Cowsins only finds an Interactable on the
-        /// exact collider its ray hit - so a stray bone in front of the body would silently eat the
-        /// prompt. Player is outside that mask, and is where a body belongs anyway.
+        /// Puts the bones on a layer the interact raycast ignores. Player is outside the Cowsins
+        /// interact mask - a bone in front of a door would otherwise eat its prompt - and is where a
+        /// body belongs anyway.
         /// </summary>
         public void ApplyBoneLayer(int layer)
         {
@@ -420,7 +558,7 @@ namespace CollarCali
 
             foreach (var collider in _colliders)
             {
-                if (collider != null && collider.transform != _hips)
+                if (collider != null)
                     collider.gameObject.layer = layer;
             }
         }

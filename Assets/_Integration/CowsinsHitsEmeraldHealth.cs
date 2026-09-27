@@ -25,6 +25,9 @@ namespace CollarCali
                 return;
             }
 
+            // The shooter's own feedback - hitmarker, killfeed - before the damage goes anywhere.
+            CombatFeedback.ReportHit(gameObject, damage, isHeadshot, IsDeadForFeedback);
+
 #if CMPSETUP_COMPLETE
             var actor = NetworkWorldActor.FindFor(gameObject);
             if (actor != null && actor.Object != null && actor.Object.IsValid)
@@ -35,6 +38,17 @@ namespace CollarCali
 #endif
 
             ApplyLocal(damage, isHeadshot);
+        }
+
+        /// <summary>Dead as far as the shooter can tell: the networked actor in a session, Emerald's health otherwise.</summary>
+        bool IsDeadForFeedback()
+        {
+#if CMPSETUP_COMPLETE
+            var actor = NetworkWorldActor.FindFor(gameObject);
+            if (actor != null && actor.Object != null && actor.Object.IsValid)
+                return actor.IsDead;
+#endif
+            return _health != null && _health.Health <= 0;
         }
 
         public void ApplyNetworkedDamage(float damage, bool isHeadshot)
@@ -64,7 +78,9 @@ namespace CollarCali
                 amount = Mathf.Max(amount, Mathf.CeilToInt(max / 2f));
             int before = _health.Health;
 
-            Scene2DamagePopup.Show(_health.transform.position, amount);
+            // The shooter's HUD shows the number on their own machine; this is the fallback.
+            if (!CombatFeedback.HasListeners)
+                Scene2DamagePopup.Show(_health.transform.position + Vector3.up * 1.8f, amount);
 
             try
             {

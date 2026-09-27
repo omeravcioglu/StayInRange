@@ -259,7 +259,7 @@ namespace CollarCali
             var players = ListAlivePlayers();
             for (int i = 0; i < players.Count; i++)
             {
-                int id = players[i].Object.InputAuthority.PlayerId;
+                int id = players[i].Owner.PlayerId;
                 if (id >= 0 && (mask & PlayerBit(id)) != 0)
                     count++;
             }
@@ -283,7 +283,7 @@ namespace CollarCali
             int mask = VisitMask;
             for (int i = 0; i < players.Count; i++)
             {
-                int id = players[i].Object.InputAuthority.PlayerId;
+                int id = players[i].Owner.PlayerId;
                 if (id < 0 || (mask & PlayerBit(id)) == 0)
                     return false;
             }
