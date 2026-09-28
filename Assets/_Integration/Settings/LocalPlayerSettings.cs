@@ -39,9 +39,14 @@ namespace CollarCali
         bool _dirty = true;
         float _nextScan;
 
+        DualPlayerController _dual;
+
         void Awake()
         {
+            // Networked, the controller sits on the bridge's object; offline (Game.unity played on
+            // its own) there is no bridge and it sits on PlayerMain.
             _bridge = GetComponent<FpsNetworkBridge>();
+            _dual = GetComponent<DualPlayerController>();
         }
 
         void OnEnable() => GameSettings.Changed += MarkDirty;
@@ -51,7 +56,7 @@ namespace CollarCali
 
         void LateUpdate()
         {
-            if (_bridge == null || !_bridge.IsLocalOwner)
+            if (_bridge != null ? !_bridge.IsLocalOwner : _dual == null)
                 return;
 
             float now = Time.unscaledTime;
@@ -73,7 +78,7 @@ namespace CollarCali
         /// <summary>Finds what the settings go onto; anything new since last time gets them at once.</summary>
         void Rescan()
         {
-            var dual = _bridge.DualPlayer;
+            var dual = _bridge != null ? _bridge.DualPlayer : _dual;
             var body = dual != null ? dual.FpsBody : null;
             var movement = body != null ? body.GetComponentInParent<PlayerMovement>(true) : null;
             if (movement == null && body != null)

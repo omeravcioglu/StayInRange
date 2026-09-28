@@ -48,6 +48,8 @@ namespace CollarCali.UI
         MenuButton _leave;
         Button _nextColour;
         Image _figure;
+        RawImage _liveFigure;
+        CharacterPreviewStage _stage;
         TextMeshProUGUI _colourName;
         readonly ColourDot[] _dots = new ColourDot[Slots];
 
@@ -118,6 +120,20 @@ namespace CollarCali.UI
             _figure = UiKit.CreateImage(root, "Figure", UiSprites.Figures[0], Color.white);
             _figure.rectTransform.AtBoard(Right, 1320f, 220f, 330f, 440f, fromTop: true);
 
+            // The character every player actually wears, live on the turntable and painted in the
+            // chosen colour, in place of the drawn figure. The drawn figure stays as the fallback
+            // when no preview model has been built (Tools > CollarCali > Build Character Visuals).
+            _stage = CharacterPreviewStage.Create(660, 880);
+            if (_stage != null)
+            {
+                var live = UiKit.CreateRect("Live Figure", root);
+                live.AtBoard(Right, 1320f, 220f, 330f, 440f, fromTop: true);
+                _liveFigure = live.gameObject.AddComponent<RawImage>();
+                _liveFigure.texture = _stage.Texture;
+                _liveFigure.raycastTarget = false;
+                _figure.gameObject.SetActive(false);
+            }
+
             Chevron(root, "Previous colour", UiSprites.ChevronLeftInk, UiSprites.ChevronLeftLine, 1210f, -1);
             _nextColour = Chevron(root, "Next colour", UiSprites.ChevronRightInk, UiSprites.ChevronRightLine, 1690f, 1);
 
@@ -187,6 +203,8 @@ namespace CollarCali.UI
         {
             int colour = Mathf.Clamp(chosen, 0, Slots - 1);
             _figure.sprite = UiKit.GetSprite(UiSprites.Figures[colour]);
+            if (_stage != null)
+                _stage.SetColour(colour);
             _colourName.text = ColourNames[colour];
             for (int i = 0; i < Slots; i++)
             {
@@ -216,6 +234,13 @@ namespace CollarCali.UI
 
         /// <summary>For gallery pages: the focused look on the primary button.</summary>
         public void ShowPrimaryFocused(bool focused) => _primary.ForceFocus(focused);
+
+        void OnDestroy()
+        {
+            // The stage is its own object away from the UI, with a render texture to release.
+            if (_stage != null)
+                Destroy(_stage.gameObject);
+        }
     }
 
     /// <summary>A roster line: colour blob, name, (you), and HOST / READY / NOT READY - or an empty seat.</summary>

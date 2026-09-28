@@ -30,6 +30,8 @@ namespace CollarCali.UI
 
         public bool IsOpen => _open;
 
+        DualPlayerController _offline;
+
         public static PauseController Create(FpsNetworkBridge local)
         {
             var go = new GameObject("PauseMenu");
@@ -37,6 +39,21 @@ namespace CollarCali.UI
             controller._local = local;
             return controller;
         }
+
+        /// <summary>Game.unity played on its own: the scene's offline test player, no session.</summary>
+        public static PauseController CreateOffline(DualPlayerController dual)
+        {
+            var go = new GameObject("PauseMenu");
+            var controller = go.AddComponent<PauseController>();
+            controller._offline = dual;
+            return controller;
+        }
+
+        bool Live => _local != null
+            ? _local.Object != null && _local.Object.IsValid && _local.IsLocalOwner
+            : _offline != null && _offline.isActiveAndEnabled;
+
+        DualPlayerController Dual => _local != null ? _local.DualPlayer : _offline;
 
         void Awake()
         {
@@ -74,7 +91,7 @@ namespace CollarCali.UI
 
         void Update()
         {
-            bool live = _local != null && _local.Object != null && _local.Object.IsValid && _local.IsLocalOwner;
+            bool live = Live;
             // The error popup owns the screen, the cursor and the selection while it is up.
             var session = SessionDirector.Instance;
             bool errorShown = session != null && session.IsShowingError;
@@ -123,7 +140,7 @@ namespace CollarCali.UI
             if (!Cursor.visible)
                 Cursor.visible = true;
 
-            var dual = _local.DualPlayer;
+            var dual = Dual;
             if (dual != null)
                 dual.SetMenuOpen(true);
 
@@ -141,7 +158,7 @@ namespace CollarCali.UI
 
             _open = open;
             UiInput.SetMenuOpen(this, open);
-            var dual = _local != null ? _local.DualPlayer : null;
+            var dual = Dual;
 
             if (open)
             {

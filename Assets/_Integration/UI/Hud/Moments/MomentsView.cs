@@ -381,6 +381,16 @@ namespace CollarCali.UI
             Countdown(_deathCountdown, secondsLeft, "Spectating your team in {0}…");
         }
 
+        /// <summary>The death card when the Game scene is played on its own: nobody to lift you, R to restart.</summary>
+        public void ShowDeathOffline(float age)
+        {
+            Show(Card.Death);
+            _death.alpha = Mathf.Clamp01(age / 0.45f);
+            _deathTitle.rectTransform.localScale = Vector3.one * Mathf.Lerp(1.15f, 1f, Mathf.Clamp01(age / 0.45f));
+            _deathLine.text = "Playing solo: nobody is coming to carry you.";
+            _deathCountdown.text = "Press R to try again";
+        }
+
         /// <summary>02 / 03: watching a teammate, with where the body is on its way back.</summary>
         public void ShowSpectating(in SpectatorData data)
         {

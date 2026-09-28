@@ -15,7 +15,10 @@ namespace CollarCali.UI
     /// stamina) and draws the redesigned widgets, and it switches the vendor HUDs off without
     /// editing them, so a vendor update or a player-prefab rebuild cannot bring them back.
     ///
-    /// Added to the local player's bridge by FpsNetworkBridge, and gone with it.
+    /// Added to the local player's bridge by FpsNetworkBridge, and gone with it. When Game.unity is
+    /// played on its own there is no session and no bridge: GamePlayerMainSetup adds it to the
+    /// scene's offline test player (PlayerMain) instead, where it draws the same HUD for one player -
+    /// the team panel is just you, and the collar, revive and teammate moments have nothing to show.
     /// </summary>
     [DisallowMultipleComponent]
     public class HudRoot : MonoBehaviour
@@ -26,7 +29,11 @@ namespace CollarCali.UI
         const int NameLength = 12;
 
         FpsNetworkBridge _local;
+        DualPlayerController _offlineDual;
         readonly CowsinsHudSource _cowsins = new CowsinsHudSource();
+
+        /// <summary>The live controller: the networked player's, or the offline test player's.</summary>
+        DualPlayerController Dual => _local != null ? _local.DualPlayer : _offlineDual;
 
         Canvas _fxCanvas;
         Canvas _hudCanvas;
@@ -45,6 +52,8 @@ namespace CollarCali.UI
         InteractionPromptView _prompt;
         MomentDirector _moments;
         PauseController _pause;
+        WorldUiDirector _world;
+        readonly MalbersPromptSource _malbersPrompts = new MalbersPromptSource();
 
         readonly List<FpsNetworkBridge> _players = new List<FpsNetworkBridge>();
         readonly List<TeamRowData> _rows = new List<TeamRowData>();
@@ -72,11 +81,17 @@ namespace CollarCali.UI
         void Awake()
         {
             _local = GetComponent<FpsNetworkBridge>();
+            if (_local == null)
+                _offlineDual = GetComponent<DualPlayerController>();
             Build();
             // YOU DIED, spectating, grabbed, the wipe: the full-screen moments, one at a time.
-            _moments = MomentDirector.Create(_local);
+            _moments = _local != null
+                ? MomentDirector.Create(_local)
+                : MomentDirector.CreateOffline(() => _cowsins.IsDead);
             // Escape: the pause menu over the running game.
-            _pause = PauseController.Create(_local);
+            _pause = _local != null ? PauseController.Create(_local) : PauseController.CreateOffline(_offlineDual);
+            // Pickup labels and the other vendor UI that lives in the world.
+            _world = WorldUiDirector.Create(() => _cowsins.Dependencies);
             // Look and key settings onto whichever controller is live.
             if (GetComponent<LocalPlayerSettings>() == null)
                 gameObject.AddComponent<LocalPlayerSettings>();
@@ -89,6 +104,7 @@ namespace CollarCali.UI
             CombatFeedback.Hit -= OnHit;
             CombatFeedback.Kill -= OnKill;
             _cowsins.Unbind();
+            _malbersPrompts.Unbind();
 
             foreach (var canvas in _canvases)
             {
@@ -100,6 +116,8 @@ namespace CollarCali.UI
                 Destroy(_moments.gameObject);
             if (_pause != null)
                 Destroy(_pause.gameObject);
+            if (_world != null)
+                Destroy(_world.gameObject);
         }
 
         void Build()
@@ -124,7 +142,9 @@ namespace CollarCali.UI
 
         void LateUpdate()
         {
-            bool live = _local != null && _local.Object != null && _local.Object.IsValid && _local.IsLocalOwner;
+            bool live = _local != null
+                ? _local.Object != null && _local.Object.IsValid && _local.IsLocalOwner
+                : _offlineDual != null && _offlineDual.isActiveAndEnabled;
             // Under the pause menu only the team panel, the collar and the notices stay, as on the
             // board: the crosshair, prompts, weapon and dashes would be noise behind a menu.
             bool paused = live && _pause != null && _pause.IsOpen;
@@ -143,15 +163,15 @@ namespace CollarCali.UI
                 Rebind();
             }
 
-            var dual = _local.DualPlayer;
-            bool dead = _local.IsDead;
+            var dual = Dual;
+            bool dead = _local != null ? _local.IsDead : _cowsins.IsDead;
             bool thirdPerson = dual != null && dual.IsThirdPerson;
             bool suspended = dual != null && dual.IsSuspended;
 
             _cowsins.ReadHealth(out float health, out float maxHealth, out float shield01);
             if (_cowsins.Dependencies == null)
             {
-                health = _local.SyncedHealth;
+                health = _local != null ? _local.SyncedHealth : 0f;
                 maxHealth = 100f;
             }
             UpdateDamageFx(health, maxHealth, dead);
@@ -166,13 +186,28 @@ namespace CollarCali.UI
             _movement.Set(dead || suspended || paused ? default : _cowsins.ReadMovement(thirdPerson, ReadStamina(thirdPerson)));
             _crosshair.Set(armed, _cowsins.EnemySpotted);
 
-            // The carry prompts win: while one is up, E belongs to the telekinesis.
+            // The carry prompts win: while one is up, E belongs to the telekinesis. Third person
+            // shows Malbers' climbing prompts; first person, Cowsins' interactions.
             bool carryPrompt = BodyCarryHud.Active != null && BodyCarryHud.Active.IsShowingPrompt;
-            _prompt.Set(!dead && !thirdPerson && !carryPrompt ? _cowsins.ReadPrompt() : default);
+            _prompt.Set(dead || carryPrompt ? default
+                : thirdPerson ? _malbersPrompts.Read()
+                : ReadFirstPersonPrompt());
 
-            _collar.Set(ReadCollar(dead, now));
+            _collar.Set(_local != null ? ReadCollar(dead, now) : default);
             UpdateCompass(dead);
             _notices.SetCheckpoint(ReadCheckpoint());
+        }
+
+        /// <summary>
+        /// Cowsins' interaction prompt, or - while a gun is being inspected, whose own panel went
+        /// with Cowsins' HUD - how to put it away.
+        /// </summary>
+        PromptData ReadFirstPersonPrompt()
+        {
+            var interact = _cowsins.Dependencies != null ? _cowsins.Dependencies.InteractManager : null;
+            if (interact != null && interact.Inspecting)
+                return new PromptData { Visible = true, Key = GameSettings.KeyLabel("Inspect"), Text = "Put it away" };
+            return _cowsins.ReadPrompt();
         }
 
         void SetCanvasesEnabled(bool live, bool paused)
@@ -206,7 +241,7 @@ namespace CollarCali.UI
 
             _compass.SetVisible(true);
             var eye = cam.transform.position;
-            var self = _local.transform.position;
+            var self = SelfPosition();
             _markers.Clear();
 
             bool anyoneDown = false;
@@ -253,6 +288,19 @@ namespace CollarCali.UI
             }
 
             _compass.Set(cam.transform.eulerAngles.y, _markers);
+        }
+
+        Vector3 SelfPosition()
+        {
+            if (_local != null)
+                return _local.transform.position;
+
+            var dual = Dual;
+            if (dual != null && dual.IsThirdPerson && dual.SteveRoot != null)
+                return dual.SteveRoot.transform.position;
+            if (dual != null && dual.FpsBody != null)
+                return dual.FpsBody.position;
+            return transform.position;
         }
 
         static float BearingTo(Vector3 from, Vector3 to)
@@ -305,17 +353,18 @@ namespace CollarCali.UI
             var deps = FindDependencies();
             _cowsins.Bind(deps);
             if (deps != null)
-                SuppressCowsinsHud(deps);
+                SuppressCowsinsHud(deps, keepRestart: _local == null);
 
-            HideMalbersDuplicates();
+            HideMalbersUi();
 
-            if (_spectator == null && _local.IsDead)
+            if (_spectator == null && _local != null && _local.IsDead)
                 _spectator = FindFirstObjectByType<SpectatorController>();
         }
 
         PlayerDependencies FindDependencies()
         {
-            var body = _local.DualPlayer != null ? _local.DualPlayer.FpsBody : null;
+            var dual = Dual;
+            var body = dual != null ? dual.FpsBody : null;
             if (body == null)
                 return null;
 
@@ -328,7 +377,7 @@ namespace CollarCali.UI
         /// nothing. Its canvas is switched off rather than its object, because Cowsins' UI code keeps
         /// running either way and starts coroutines that fail on an inactive object.
         /// </summary>
-        static void SuppressCowsinsHud(PlayerDependencies deps)
+        static void SuppressCowsinsHud(PlayerDependencies deps, bool keepRestart)
         {
             var root = deps.transform.root;
             foreach (var ui in root.GetComponentsInChildren<UIController>(true))
@@ -342,7 +391,10 @@ namespace CollarCali.UI
             if (deps.Crosshair != null)
                 deps.Crosshair.SetVisibility(false);
 
-            // Its death screen's restart key reloads the scene locally, outside the session.
+            // Its death screen's restart key reloads the scene locally, outside the session. Offline
+            // there is no session and no revive, so it stays: it is how a solo run starts again.
+            if (keepRestart)
+                return;
             foreach (var restart in root.GetComponentsInChildren<DeathRestart>(true))
             {
                 if (restart.enabled)
@@ -351,10 +403,13 @@ namespace CollarCali.UI
         }
 
         /// <summary>
-        /// The Malbers canvas in the level duplicates two things this HUD now draws - stamina and the
-        /// hurt flash. Its interact and ledge prompts stay: they are the third-person climbing hints.
+        /// The Malbers UI in the level goes entirely: its "Main Canvas" (stamina, hurt flash, the
+        /// interact and ledge prompts, reticles, enemy bars - all drawn by this HUD now, or never
+        /// used) and its "Settings Menu", which froze time and freed the cursor on Escape in third
+        /// person. The prompts' events are taken from the canvas first, so the third-person climbing
+        /// hints carry on - on this HUD's prompt line.
         /// </summary>
-        void HideMalbersDuplicates()
+        void HideMalbersUi()
         {
             if (_malbersHudHidden)
                 return;
@@ -366,26 +421,52 @@ namespace CollarCali.UI
             int hidden = 0;
             foreach (var root in scene.GetRootGameObjects())
             {
-                hidden += HideNamed(root.transform, "Slider Stamina UI v2");
-                hidden += HideNamed(root.transform, "Hurt UI");
+                var canvas = FindNamed(root.transform, "Main Canvas");
+                if (canvas != null && canvas.GetComponent<Canvas>() != null)
+                {
+                    if (!_malbersPrompts.IsBound)
+                        _malbersPrompts.Bind(EventOf(canvas, "Interact UI"), EventOf(canvas, "Ledge UI"));
+                    if (canvas.gameObject.activeSelf)
+                        canvas.gameObject.SetActive(false);
+                    hidden++;
+                }
+
+                var settings = FindNamed(root.transform, "Settings Menu");
+                if (settings != null && settings.GetComponent<Canvas>() != null && settings.gameObject.activeSelf)
+                    settings.gameObject.SetActive(false);
             }
 
             _malbersHudHidden = hidden > 0;
         }
 
-        static int HideNamed(Transform root, string name)
+        /// <summary>The Malbers event a prompt under the canvas listened to.</summary>
+        static MalbersAnimations.Events.MEvent EventOf(Transform canvas, string prompt)
         {
-            int count = 0;
-            if (root.name == name)
+            var holder = FindNamed(canvas, prompt);
+            var listener = holder != null ? holder.GetComponent<MalbersAnimations.Events.MEventListener>() : null;
+            if (listener == null)
+                return null;
+            foreach (var item in listener.Events)
             {
-                if (root.gameObject.activeSelf)
-                    root.gameObject.SetActive(false);
-                return 1;
+                if (item != null && item.Event != null)
+                    return item.Event;
             }
 
+            return null;
+        }
+
+        static Transform FindNamed(Transform root, string name)
+        {
+            if (root.name == name)
+                return root;
             for (int i = 0; i < root.childCount; i++)
-                count += HideNamed(root.GetChild(i), name);
-            return count;
+            {
+                var found = FindNamed(root.GetChild(i), name);
+                if (found != null)
+                    return found;
+            }
+
+            return null;
         }
 
         /// <summary>Steve's stamina, 0-1, while third person is live; negative otherwise.</summary>
@@ -394,7 +475,7 @@ namespace CollarCali.UI
             if (!thirdPerson)
                 return -1f;
 
-            var steve = _local.DualPlayer != null ? _local.DualPlayer.SteveRoot : null;
+            var steve = Dual != null ? Dual.SteveRoot : null;
             if (steve == null)
                 return -1f;
 
@@ -474,6 +555,24 @@ namespace CollarCali.UI
         void FillTeam(float health, float maxHealth, float shield01)
         {
             _rows.Clear();
+            if (_local == null)
+            {
+                // Offline: a team of one.
+                string name = PlayerPrefs.GetString(MenuFlow.NameKey, string.Empty);
+                _rows.Add(new TeamRowData
+                {
+                    Name = Shorten(string.IsNullOrEmpty(name) ? "YOU" : name.ToUpperInvariant()),
+                    Colour = PlayerColorPalette.Get(Mathf.Max(0, PlayerColorPalette.SavedChoice)),
+                    IsSelf = true,
+                    Status = _cowsins.IsDead ? RowStatus.Down : RowStatus.Alive,
+                    Health = health,
+                    MaxHealth = maxHealth,
+                    Shield01 = shield01,
+                    Voice = VoiceState.Hidden,
+                });
+                return;
+            }
+
             var origin = _local.GetNetworkAnchorPosition();
             var watched = _spectator != null && _spectator.IsActive ? _spectator.Target : null;
 

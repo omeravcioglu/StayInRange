@@ -104,6 +104,13 @@ namespace CollarCali
         Rigidbody _fpsRigidbody;
         Animator _remoteAnimator;
         float _bodyLocalY = 1f;
+
+        /// <summary>
+        /// Pivot-to-feet distance of the FPS body, read from its capsule. The prefab's 1 m body
+        /// offset (_bodyLocalY) is NOT where the feet are - the capsule is raised off the pivot - and
+        /// using it put every first-person player half a metre into the floor on other screens.
+        /// </summary>
+        float FeetOffset() => DualPlayerController.CapsuleFeetOffset(fpsBody, _bodyLocalY);
         bool _applyingLocalDamage;
         bool _fpsDetached;
         bool _wasFiring;
@@ -444,7 +451,7 @@ namespace CollarCali
 
             if (fpsBody.IsChildOf(transform))
             {
-                fpsBody.localPosition = new Vector3(0f, _bodyLocalY, 0f);
+                fpsBody.localPosition = new Vector3(0f, FeetOffset(), 0f);
                 fpsBody.localRotation = Quaternion.identity;
                 if (_fpsRigidbody != null)
                     _fpsRigidbody.position = fpsBody.position;
@@ -504,7 +511,7 @@ namespace CollarCali
             if (fpsBody != null)
             {
                 fpsBody.SetPositionAndRotation(
-                    worldPosition + Vector3.up * _bodyLocalY,
+                    worldPosition + Vector3.up * FeetOffset(),
                     Quaternion.Euler(0f, yawDegrees, 0f));
                 if (_fpsRigidbody != null)
                     _fpsRigidbody.position = fpsBody.position;
@@ -525,7 +532,7 @@ namespace CollarCali
             if (_malbersThirdPerson && _malbersDrive != null)
                 return _malbersDrive.position;
             if (fpsBody != null)
-                return fpsBody.position - Vector3.up * _bodyLocalY;
+                return fpsBody.position - Vector3.up * FeetOffset();
             return transform.position;
         }
 
@@ -666,7 +673,7 @@ namespace CollarCali
             if (fpsBody == null)
                 return;
 
-            var bodyPos = position + Vector3.up * _bodyLocalY;
+            var bodyPos = position + Vector3.up * FeetOffset();
             fpsBody.SetPositionAndRotation(bodyPos, rot);
             if (_fpsRigidbody != null)
             {
@@ -731,7 +738,7 @@ namespace CollarCali
             yield return new WaitForSecondsRealtime(0.35f);
 
             if (_cowsinsStats != null)
-                _cowsinsStats.Respawn(position + Vector3.up * _bodyLocalY);
+                _cowsinsStats.Respawn(position + Vector3.up * FeetOffset());
 
             AuthorityTeleport(position, yawDegrees);
 
@@ -1241,7 +1248,7 @@ namespace CollarCali
             AuthorityTeleport(position, yawDegrees);
 
             if (_cowsinsStats != null)
-                _cowsinsStats.Respawn(position + Vector3.up * _bodyLocalY);
+                _cowsinsStats.Respawn(position + Vector3.up * FeetOffset());
 
             AuthorityTeleport(position, yawDegrees);
 

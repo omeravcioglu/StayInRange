@@ -83,5 +83,48 @@ namespace CollarCali
                     smr.sharedMaterials = mats;
             }
         }
+
+        static readonly int BaseColorId = Shader.PropertyToID("_BaseColor");
+        static readonly int ColorId = Shader.PropertyToID("_Color");
+
+        /// <summary>
+        /// Dresses a body the way a player in <paramref name="colourIndex"/> looks in the game, by the
+        /// same rule FpsNetworkBridge.ApplyIdentity uses: with a skin per colour (the shared body
+        /// recoloured four ways) the body wears that colour's skin; with a single skin (one character
+        /// model) it wears that skin painted in the player colour.
+        ///
+        /// Painted through a property block rather than instanced materials, so a preview that changes
+        /// colour every click leaves no material copies behind. For previews - the lobby's turntable -
+        /// not for networked bodies, which keep FpsNetworkBridge's own path.
+        /// </summary>
+        public static void ApplyPlayerLook(GameObject visualRoot, int colourIndex)
+        {
+            if (visualRoot == null)
+                return;
+
+            var lib = CharacterSkinLibrary.Load();
+            bool perColour = lib != null && lib.Count >= PlayerColorPalette.Count;
+            Apply(visualRoot, perColour ? colourIndex : 0);
+
+            var block = new MaterialPropertyBlock();
+            var tint = PlayerColorPalette.Get(colourIndex);
+            foreach (var renderer in visualRoot.GetComponentsInChildren<Renderer>(true))
+            {
+                if (renderer == null)
+                    continue;
+
+                if (perColour)
+                {
+                    // The skin carries the colour; clear any tint an earlier pick left behind.
+                    renderer.SetPropertyBlock(null);
+                    continue;
+                }
+
+                renderer.GetPropertyBlock(block);
+                block.SetColor(BaseColorId, tint);
+                block.SetColor(ColorId, tint);
+                renderer.SetPropertyBlock(block);
+            }
+        }
     }
 }

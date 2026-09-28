@@ -41,6 +41,9 @@ namespace CollarCali.UI
         WeaponGlyph[] _slotGlyphs = new WeaponGlyph[0];
 
         public PlayerDependencies Dependencies => _deps;
+
+        /// <summary>Cowsins' own death state, for the offline player that has no networked one.</summary>
+        public bool IsDead => _deps != null && _deps.PlayerStats != null && _deps.PlayerStats.IsDead;
         public bool EnemySpotted => _enemySpotted && _deps != null;
 
         public void Bind(PlayerDependencies deps)
@@ -265,7 +268,8 @@ namespace CollarCali.UI
             data.ShowSlots = Time.time < _slotsUntil;
         }
 
-        static WeaponGlyph GlyphFor(Weapon_SO weapon)
+        /// <summary>The silhouette a weapon is drawn with, by its name.</summary>
+        internal static WeaponGlyph GlyphFor(Weapon_SO weapon)
         {
             var name = weapon != null ? weapon._name : null;
             if (string.IsNullOrEmpty(name))

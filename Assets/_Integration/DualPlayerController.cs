@@ -31,6 +31,8 @@ namespace CollarCali
         [SerializeField] GameObject camerasPrefab;
 
         [Header("Body height")]
+        [Tooltip("Fallback only. The feet are read from the FPS body's capsule collider; this is used " +
+                 "just when the body has no upright CapsuleCollider.")]
         [SerializeField] float fpsBodyLocalY = 1f;
 
         // Camera transition timings live in Resources/PlayerTuning (Camera Transition), next to every
@@ -1390,13 +1392,39 @@ namespace CollarCali
             }
         }
 
+        /// <summary>
+        /// How far the bottom of a body's capsule sits below the body's own pivot - where its feet
+        /// actually are - read from the collider rather than assumed.
+        ///
+        /// On the Cowsins player the capsule is raised off its pivot (height 2, centre +0.5), so the
+        /// feet are 0.5 m below the pivot, not the 1 m the old fixed offset assumed. That half metre
+        /// is how far into the floor everyone else saw a first-person player standing, since the
+        /// network root and the body drawn on it are placed at the feet this reports. Crouching
+        /// scales the body, which the lossy scale here follows.
+        /// </summary>
+        public static float CapsuleFeetOffset(Transform body, float fallback)
+        {
+            if (body == null)
+                return fallback;
+
+            var capsule = body.GetComponent<CapsuleCollider>();
+            if (capsule == null || capsule.direction != 1)
+                return fallback;
+
+            float halfHeight = Mathf.Max(capsule.height * 0.5f, capsule.radius);
+            return Mathf.Max(0f, (halfHeight - capsule.center.y) * Mathf.Abs(body.lossyScale.y));
+        }
+
+        float FpsFeetOffset() => CapsuleFeetOffset(fpsBody, fpsBodyLocalY);
+
         void PlaceFps(Vector3 position, float yawDegrees)
         {
             CacheFps();
             if (fpsBody == null)
                 return;
 
-            var bodyPos = position + Vector3.up * fpsBodyLocalY;
+            // A couple of centimetres of clearance, so the capsule never starts inside the floor.
+            var bodyPos = position + Vector3.up * (FpsFeetOffset() + 0.02f);
             var rot = Quaternion.Euler(0f, yawDegrees, 0f);
             fpsBody.SetPositionAndRotation(bodyPos, rot);
 
@@ -1413,10 +1441,11 @@ namespace CollarCali
             transform.SetPositionAndRotation(position, rot);
         }
 
+        /// <summary>The first-person player's feet: the bottom of the Cowsins capsule.</summary>
         Vector3 GetFpsWorldPosition()
         {
             if (fpsBody != null)
-                return fpsBody.position - Vector3.up * fpsBodyLocalY;
+                return fpsBody.position - Vector3.up * FpsFeetOffset();
             return transform.position;
         }
 
@@ -2101,6 +2130,10 @@ namespace CollarCali
             if (!string.IsNullOrEmpty(malbersWanted))
                 link.EnableInput(malbersWanted, false);
             _mutedMalbersInputs = malbersWanted;
+
+            // Escape is the game's own pause menu. Malbers' pause froze time and freed the cursor
+            // through its settings canvas, which is gone; its key is taken away as well.
+            link.EnableInput("Pause", false);
         }
 
         /// <summary>

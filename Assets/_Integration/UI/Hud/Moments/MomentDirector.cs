@@ -62,6 +62,22 @@ namespace CollarCali.UI
             return director;
         }
 
+        System.Func<bool> _offlineDead;
+        bool _offlineWasDead;
+        float _offlineDiedAt;
+
+        /// <summary>
+        /// Game.unity played on its own: no team, no revive - only the YOU DIED card, over Cowsins'
+        /// own restart key.
+        /// </summary>
+        public static MomentDirector CreateOffline(System.Func<bool> isDead)
+        {
+            var go = new GameObject("MomentDirector");
+            var director = go.AddComponent<MomentDirector>();
+            director._offlineDead = isDead;
+            return director;
+        }
+
         void Awake()
         {
             Instance = this;
@@ -102,6 +118,19 @@ namespace CollarCali.UI
                 _backCanvas.enabled = drawn;
             if (_frontCanvas.enabled != drawn)
                 _frontCanvas.enabled = drawn;
+
+            if (_offlineDead != null)
+            {
+                bool offlineDead = _offlineDead();
+                if (offlineDead && !_offlineWasDead)
+                    _offlineDiedAt = Time.unscaledTime;
+                _offlineWasDead = offlineDead;
+                if (offlineDead)
+                    _view.ShowDeathOffline(Time.unscaledTime - _offlineDiedAt);
+                else
+                    _view.HideAll();
+                return;
+            }
 
             if (_local == null || _local.Object == null || !_local.Object.IsValid || !_local.IsLocalOwner)
             {

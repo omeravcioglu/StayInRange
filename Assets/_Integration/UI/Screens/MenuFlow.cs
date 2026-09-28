@@ -20,7 +20,8 @@ namespace CollarCali.UI
     /// </summary>
     public class MenuFlow : MonoBehaviour
     {
-        const string NameKey = "CollarCali.PlayerName";
+        /// <summary>The player's name, saved on this machine by the title screen.</summary>
+        public const string NameKey = "CollarCali.PlayerName";
         const float ConnectTimeoutSeconds = 20f;
         const float JoinTimeoutSeconds = 25f;
 

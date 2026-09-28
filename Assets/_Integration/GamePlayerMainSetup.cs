@@ -31,11 +31,18 @@ namespace CollarCali
                 Setup(scene);
         }
 
+        /// <summary>
+        /// True only when Play was pressed with Game.unity open. The offline player is for exactly
+        /// that; a Game scene reached from the menu or lobby belongs to a network session.
+        /// </summary>
+        static bool _startedInGame;
+
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         static void AfterSceneLoad()
         {
             var active = SceneManager.GetActiveScene();
-            if (active.name == "Game")
+            _startedInGame = active.name == "Game";
+            if (_startedInGame)
                 Setup(active);
         }
 
@@ -62,6 +69,20 @@ namespace CollarCali
                 return;
             }
 
+            if (!_startedInGame)
+            {
+                // Reached from the lobby, but the session is already gone - it dropped while this
+                // scene was loading. Building the offline player here is what put a lone player
+                // somewhere in the level behind the SOMETHING BROKE popup. Leave the scene empty;
+                // the popup takes the player back to the menu.
+                // #region agent log
+                AgentDebugLog.Write("B1", "GamePlayerMainSetup.Setup", "session_lost_no_offline",
+                    "{\"scene\":\"" + scene.name + "\"}");
+                // #endregion
+                DisableSceneOfflinePlayers();
+                return;
+            }
+
             // #region agent log
             AgentDebugLog.Write("B1", "GamePlayerMainSetup.Setup", "offline_wrap_playermain",
                 "{\"scene\":\"" + scene.name + "\"}");
@@ -85,7 +106,14 @@ namespace CollarCali
                 dual = main.AddComponent<DualPlayerController>();
 
             dual.WireExisting(fps, steve, cameras);
+#if CMPSETUP_COMPLETE
+            // The redesigned HUD, the same one a session gets: it draws stamina itself and switches
+            // the Cowsins and Malbers HUDs off.
+            if (main.GetComponent<UI.HudRoot>() == null)
+                main.AddComponent<UI.HudRoot>();
+#else
             PinMalbersStaminaHud();
+#endif
             if (steve != null)
                 steve.SetActive(false);
             if (cameras != null)
