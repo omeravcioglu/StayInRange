@@ -101,4 +101,4 @@ Scenes are loaded by name. The lobby starts the match through Fusion's networked
 
 This public repository is a **showcase**. It contains the documentation and the **171 source files I wrote** for this project. The complete project, including licensed third-party assets that cannot be redistributed, is kept in a private repository.
 
-Copyright © Omer Avcioglu (McHunter Studio). **All rights reserved.** Viewing only; see LICENSE.
+Copyright © Omer Avcioglu (McHunter Studio). **All rights reserved.** Viewing only; see [LICENSE](LICENSE).
