@@ -89,6 +89,11 @@ namespace CollarCali
                      "targeted. Larger is more forgiving.")]
             [Range(5f, 90f)] public float pickupViewAngle = 40f;
 
+            [Tooltip("How far away a body can be lifted by putting the crosshair on it, in metres, " +
+                     "measured from the carrier (not the third-person camera behind them). Bodies " +
+                     "right at your feet still work without aiming, within Pickup Distance.")]
+            [Min(1f)] public float aimPickupDistance = 6f;
+
             [Header("Holding")]
             [Tooltip("How far in front of the carrier the body floats, in metres.")]
             [Min(0.8f)] public float holdDistance = 2.0f;

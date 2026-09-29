@@ -519,6 +519,11 @@ namespace CollarCali
             best = null;
             isCatch = false;
 
+            // Whatever the crosshair is on comes first: pointing at a body should lift it from a
+            // normal distance, not only from standing on top of it.
+            if (TryCrosshairTarget(out best, out isCatch))
+                return;
+
             if (_dual == null || !_dual.TryGetAim(out var origin, out var forward))
                 return;
 
@@ -562,6 +567,117 @@ namespace CollarCali
                 bestScore = score;
                 best = body;
                 isCatch = flying;
+            }
+        }
+
+        const float CrosshairRadius = 0.2f;
+        const float OwnColliderRefreshSeconds = 2f;
+
+        static readonly RaycastHit[] CrosshairHits = new RaycastHit[24];
+        static readonly IComparer<RaycastHit> NearestFirst =
+            Comparer<RaycastHit>.Create((a, b) => a.distance.CompareTo(b.distance));
+
+        readonly HashSet<Collider> _ownColliderSet = new HashSet<Collider>();
+        readonly List<Collider> _ownColliderScratch = new List<Collider>();
+        float _ownCollidersRefreshedAt = -999f;
+
+        /// <summary>
+        /// The dead body the crosshair is on, if one is in reach and nothing solid is in front of it.
+        ///
+        /// A slightly fat ray (limbs are thin) from the camera actually rendering the view, through
+        /// every hit in order: this player's own colliders are skipped - in third person the ray
+        /// passes through the character first - and the first thing that is not a body ends the
+        /// search, so a wall between you and a body blocks it. Range is measured from the player,
+        /// so the third-person camera sitting metres behind them does not eat into it.
+        /// </summary>
+        bool TryCrosshairTarget(out FpsNetworkBridge body, out bool isCatch)
+        {
+            body = null;
+            isCatch = false;
+
+            if (_dual == null || !_dual.TryGetCrosshairRay(out var ray))
+                return false;
+
+            var tuning = PlayerTuning.Active;
+            float reach = Mathf.Max(tuning.carry.aimPickupDistance, tuning.catching.maxCatchDistance);
+
+            // How far along the ray the player stands: zero in first person, the camera's distance
+            // behind the character in third person.
+            float behind = 0f;
+            if (_dual.TryGetAim(out var origin, out _))
+                behind = Mathf.Max(0f, Vector3.Dot(origin - ray.origin, ray.direction));
+
+            RefreshOwnColliders();
+
+            int count = Physics.SphereCastNonAlloc(ray, CrosshairRadius, CrosshairHits, reach + behind,
+                ~0, QueryTriggerInteraction.Ignore);
+            if (count <= 0)
+                return false;
+            System.Array.Sort(CrosshairHits, 0, count, NearestFirst);
+
+            for (int i = 0; i < count; i++)
+            {
+                var collider = CrosshairHits[i].collider;
+                if (collider == null || _ownColliderSet.Contains(collider))
+                    continue;
+
+                var owner = BodyOwning(collider);
+                if (owner == null)
+                    return false; // a wall, a crate, an enemy - the crosshair is on that, not a body
+
+                if (!owner.IsDead || owner.IsCarried)
+                    return false;
+
+                bool flying = owner.Phase == BodyPhase.Thrown;
+                float fromPlayer = CrosshairHits[i].distance - behind;
+                float limit = flying ? tuning.catching.maxCatchDistance : tuning.carry.aimPickupDistance;
+                if (fromPlayer > limit)
+                    return false;
+
+                body = owner;
+                isCatch = flying;
+                return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>The dead player whose ragdoll this collider is a bone of, or null.</summary>
+        FpsNetworkBridge BodyOwning(Collider collider)
+        {
+            foreach (var bridge in FpsNetworkBridge.All)
+            {
+                if (bridge == null || bridge == _self || !bridge.IsDead)
+                    continue;
+
+                var ragdoll = bridge.DownState != null ? bridge.DownState.Ragdoll : null;
+                if (ragdoll == null)
+                    continue;
+
+                var colliders = ragdoll.Colliders;
+                for (int i = 0; i < colliders.Count; i++)
+                {
+                    if (colliders[i] == collider)
+                        return bridge;
+                }
+            }
+
+            return null;
+        }
+
+        void RefreshOwnColliders()
+        {
+            if (Time.time - _ownCollidersRefreshedAt < OwnColliderRefreshSeconds)
+                return;
+
+            _ownCollidersRefreshedAt = Time.time;
+            _ownColliderScratch.Clear();
+            _dual?.CollectOwnColliders(_ownColliderScratch);
+            _ownColliderSet.Clear();
+            foreach (var collider in _ownColliderScratch)
+            {
+                if (collider != null)
+                    _ownColliderSet.Add(collider);
             }
         }
 

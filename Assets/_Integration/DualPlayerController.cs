@@ -1315,9 +1315,9 @@ namespace CollarCali
             var jumpBasic = animal.State_Get<JumpBasic>();
             if (jumpBasic != null)
             {
-                // One jump, matching first person (Cowsins maxJumps is 1): double jumping was removed
-                // from the game, and a mode switch must not quietly bring it back.
-                jumpBasic.Jumps.Value = 1;
+                // Double jump in third person, as Malbers had it. First person stays on a single
+                // jump (Cowsins maxJumps is 1) - the double jump is a third-person move only.
+                jumpBasic.Jumps.Value = 2;
                 // The Meshy characters are taller than Steve, so the stock jump reads as a low hop.
                 // Nudge each jump profile's apex + launch speed up a little. Malbers clones states per
                 // animal at runtime, so this touches only this player's instance and resets each play.
@@ -1983,6 +1983,33 @@ namespace CollarCali
 
             origin = eye.position;
             forward = eye.forward;
+            return true;
+        }
+
+        /// <summary>
+        /// The line through the middle of the screen, from the camera actually rendering it: the
+        /// first-person eye, or in third person the shoulder camera (or the throw aim view). This is
+        /// what "the crosshair is on it" means, in either mode.
+        /// </summary>
+        public bool TryGetCrosshairRay(out Ray ray)
+        {
+            ray = default;
+            if (_suspended)
+                return false;
+
+            if (_thirdPerson)
+            {
+                var brain = camerasCm3 != null ? camerasCm3.GetComponentInChildren<CinemachineBrain>(true) : null;
+                if (brain == null)
+                    return false;
+                ray = new Ray(brain.transform.position, brain.transform.forward);
+                return true;
+            }
+
+            var eye = ResolveFpsCameraTransform();
+            if (eye == null)
+                return false;
+            ray = new Ray(eye.position, eye.forward);
             return true;
         }
 
