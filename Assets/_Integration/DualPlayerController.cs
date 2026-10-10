@@ -30,6 +30,10 @@ namespace CollarCali
         [SerializeField] GameObject stevePrefab;
         [SerializeField] GameObject camerasPrefab;
 
+        [Tooltip("Build from the source prefabs only, never taking over a player rig found elsewhere in " +
+                 "the scene. The debug characters set this so they start where they are placed.")]
+        [SerializeField] bool ignoreScenePlayers;
+
         [Header("Body height")]
         [Tooltip("Fallback only. The feet are read from the FPS body's capsule collider; this is used " +
                  "just when the body has no upright CapsuleCollider.")]
@@ -150,6 +154,17 @@ namespace CollarCali
             if (other == null)
                 return;
             SetSourcePrefabs(other.cowsinsPrefab, other.stevePrefab, other.camerasPrefab);
+        }
+
+        /// <summary>
+        /// Offline, the character takes over a Cowsins rig, Steve and "Cameras CM3" it finds anywhere in
+        /// the scene - how Game.unity's authored player is wrapped - wherever they stand. Set, it builds
+        /// its own from the source prefabs instead. Takes effect when the character is built (Awake).
+        /// </summary>
+        public bool IgnoreScenePlayers
+        {
+            get => ignoreScenePlayers;
+            set => ignoreScenePlayers = value;
         }
 
         public void BindNetworkOwner(FpsNetworkBridge bridge, System.Action<bool> onModeChanged)
@@ -332,10 +347,13 @@ namespace CollarCali
 
         void FindExisting()
         {
+            // Offline, a rig already in the scene is taken over unless this one builds its own.
+            bool searchScene = !_networkMode && !ignoreScenePlayers;
+
             if (fpsRoot == null)
             {
                 var movement = GetComponentInChildren<PlayerMovement>(true);
-                if (movement == null && !_networkMode)
+                if (movement == null && searchScene)
                     movement = FindFirstObjectByType<PlayerMovement>(FindObjectsInactive.Include);
                 if (movement != null)
                     fpsRoot = ClimbToOwnedRoot(movement.transform);
@@ -344,7 +362,7 @@ namespace CollarCali
             if (steveRoot == null)
             {
                 animal = GetComponentInChildren<MAnimal>(true);
-                if (animal == null && !_networkMode)
+                if (animal == null && searchScene)
                 {
                     foreach (var candidate in FindObjectsByType<MAnimal>(FindObjectsInactive.Include, FindObjectsSortMode.None))
                     {
@@ -370,7 +388,7 @@ namespace CollarCali
                 if (child != null)
                     camerasCm3 = child.gameObject;
                 else
-                    camerasCm3 = _networkMode ? null : FindNamedIncludingInactive("Cameras CM3");
+                    camerasCm3 = searchScene ? FindNamedIncludingInactive("Cameras CM3") : null;
             }
         }
 
