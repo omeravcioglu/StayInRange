@@ -44,7 +44,7 @@
 
 ## What I built
 
-All of the integration and game code lives in **`Assets/_Integration/`**: 173 C# scripts, about 44k lines.
+All of the integration and game code lives in **`Assets/_Integration/`**: 174 C# scripts, about 44k lines.
 
 | System | Key scripts |
 |---|---|
@@ -57,6 +57,7 @@ All of the integration and game code lives in **`Assets/_Integration/`**: 173 C#
 | One HUD for both controllers (first-person Cowsins, third-person Malbers), full-screen moments, world-space pickup labels | `UI/Hud/HudRoot.cs`, `CowsinsHudSource.cs`, `MalbersPromptSource.cs`, `UI/Hud/Moments/MomentDirector.cs`, `UI/World/WorldUiDirector.cs`, `PickupLabel.cs` |
 | Settings (video, sound, look sensitivity, key rebinding) applied to whichever controller is live | `Settings/GameSettings.cs`, `Settings/LocalPlayerSettings.cs`, `UI/Screens/SettingsView.cs` |
 | UI gallery: every designed screen state built from mock data and captured to PNG from the editor or the command line | `UI/Gallery/UiScenarios.cs`, `UI/Editor/UiGalleryTools.cs`, `UiBatch.cs`, `UiThemeBuilder.cs` |
+| Debug characters: the game's own player (both controller rigs, HUD, pause and settings) as two drop-in prefabs, one starting in first person and one in third, for testing a level or a prop without the menu or a match | `Debug Characters/DebugCharacter.cs` |
 | Session and loading: every machine starts loading a new scene at the same time, the connection survives long loads, and reflection probes render gradually after a load | `Multiplayer/CollarSceneManager.cs`, `Multiplayer/CloudKeepAlive.cs`, `ReflectionProbeScheduler.cs` |
 | Host-simulated enemies that every client can resolve locally | `Multiplayer/NetworkWorldActor.cs` |
 | Enemies | `ZombieEnemy.cs`, `ZombieAmbushSpawner.cs`, `CreepGrabEnemy.cs`, `MagicianEnemy.cs` |
