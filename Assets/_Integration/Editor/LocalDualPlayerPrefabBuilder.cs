@@ -19,7 +19,6 @@ namespace CollarCali.Editor
         const string OutputPath = OutputDir + "/LocalDualPlayer.prefab";
         const string ResourcesDir = "Assets/_Integration/Resources";
         const string ResourcesPath = ResourcesDir + "/LocalDualPlayer.prefab";
-        const string GameScenePath = "Assets/Scenes/Game.unity";
 
         [MenuItem("Tools/CollarCali/Build Local Dual Player Prefab")]
         public static void BuildFromMenu()
@@ -120,7 +119,14 @@ namespace CollarCali.Editor
             if (dual == null)
                 return;
 
-            var scene = EditorSceneManager.OpenScene(GameScenePath, OpenSceneMode.Single);
+            string gameScenePath = ProjectPaths.Scene("Game");
+            if (gameScenePath == null)
+            {
+                Debug.LogError("[LocalDualPlayer] The project has no Game scene to set up.");
+                return;
+            }
+
+            var scene = EditorSceneManager.OpenScene(gameScenePath, OpenSceneMode.Single);
 
             var old = GameObject.Find("Malbers Mode Switch");
             if (old != null)

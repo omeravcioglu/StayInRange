@@ -7,15 +7,16 @@ using UnityEngine;
 namespace CollarCali.EditorTools
 {
     /// <summary>
-    /// Keeps Assets/Scenes/Lobby.unity registered in Build Settings. Room creation resolves the
+    /// Keeps the Lobby scene registered in Build Settings. Room creation resolves the
     /// lobby by build index, so if the scene ever drops out of the list every host silently falls
     /// back to loading Game directly - which is exactly the behaviour the lobby replaced.
+    /// The scenes are found by name (ProjectPaths), wherever their folder is.
     /// </summary>
     [InitializeOnLoad]
     public static class LobbySceneSetup
     {
-        const string LobbyScenePath = "Assets/Scenes/Lobby.unity";
-        const string GameScenePath = "Assets/Scenes/Game.unity";
+        const string LobbySceneName = "Lobby";
+        const string GameSceneName = "Game";
 
         static LobbySceneSetup()
         {
@@ -29,14 +30,15 @@ namespace CollarCali.EditorTools
 
         static void Verify(bool verbose)
         {
-            if (AssetDatabase.LoadAssetAtPath<Object>(LobbyScenePath) == null)
+            string lobbyPath = ProjectPaths.Scene(LobbySceneName);
+            if (lobbyPath == null)
             {
-                Debug.LogError("[CollarCali] " + LobbyScenePath + " is missing from the project.");
+                Debug.LogError("[CollarCali] The project has no " + LobbySceneName + " scene.");
                 return;
             }
 
             var scenes = EditorBuildSettings.scenes.ToList();
-            int lobby = scenes.FindIndex(s => s.path == LobbyScenePath);
+            int lobby = scenes.FindIndex(s => s.path == lobbyPath);
 
             if (lobby >= 0 && scenes[lobby].enabled)
             {
@@ -48,19 +50,19 @@ namespace CollarCali.EditorTools
 
             if (lobby >= 0)
             {
-                scenes[lobby] = new EditorBuildSettingsScene(LobbyScenePath, true);
+                scenes[lobby] = new EditorBuildSettingsScene(lobbyPath, true);
             }
             else
             {
                 // Appended, never inserted: build indices follow list order, so placing it beside
                 // Game would renumber every scene after it.
-                scenes.Add(new EditorBuildSettingsScene(LobbyScenePath, true));
+                scenes.Add(new EditorBuildSettingsScene(lobbyPath, true));
             }
 
             EditorBuildSettings.scenes = scenes.ToArray();
-            Debug.Log("[CollarCali] Registered " + LobbyScenePath + " in Build Settings.");
+            Debug.Log("[CollarCali] Registered " + lobbyPath + " in Build Settings.");
 
-            if (scenes.All(s => s.path != GameScenePath || !s.enabled))
+            if (scenes.All(s => System.IO.Path.GetFileNameWithoutExtension(s.path) != GameSceneName || !s.enabled))
                 Debug.LogError("[CollarCali] 'Game' is not an enabled Build Settings scene - " +
                                "Start Game will fail.");
         }

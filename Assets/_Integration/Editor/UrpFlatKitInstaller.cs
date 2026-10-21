@@ -27,7 +27,8 @@ namespace CollarCali.Integration.Editor
         const string GroundMatPath = "Assets/Settings/FK-Scene1-Ground.mat";
         const string StoneMatPath = "Assets/Settings/FK-Scene1-Stone.mat";
         const string SpearsMatPath = "Assets/Settings/FK-Scene1-Spears.mat";
-        const string Scene1Path = "Assets/Scenes/1.unity";
+        /// <summary>Scene "1", found by name wherever the scenes folder is; null when there is none.</summary>
+        static string Scene1Path => ProjectPaths.Scene("1");
         const string SpikeMatPath = "Assets/AK Studio Art/Traps Pack/Materials/Spike Trap A.mat";
         const string LightPlaneMatPath = "Assets/Settings/Scene1-LightPlane.mat";
         const string ObjectOutlineMatPath = "Assets/Settings/Scene1-ObjectOutline.mat";
@@ -336,11 +337,12 @@ namespace CollarCali.Integration.Editor
             EnsureObjectOutlineMaterial();
             var objectOutline = AssetDatabase.LoadAssetAtPath<Material>(ObjectOutlineMatPath);
 
-            if (!System.IO.File.Exists(System.IO.Path.Combine(Application.dataPath, "Scenes/1.unity")))
+            string scene1Path = Scene1Path;
+            if (scene1Path == null)
                 return;
 
             var previous = SceneManager.GetActiveScene();
-            var scene = EditorSceneManager.OpenScene(Scene1Path, OpenSceneMode.Additive);
+            var scene = EditorSceneManager.OpenScene(scene1Path, OpenSceneMode.Additive);
             try
             {
                 int assigned = 0;

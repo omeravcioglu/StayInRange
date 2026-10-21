@@ -15,7 +15,8 @@ namespace CollarCali.Editor
         const string GenericPickupPath = "Assets/Cowsins/Prefabs/DragAndDropExtras/WeaponPickeableGeneric.prefab";
         const string OutputDir = "Assets/_Integration/Prefabs";
         const string OutputPath = OutputDir + "/NetworkWeaponPickup.prefab";
-        const string GameScenePath = "Assets/Scenes/Game.unity";
+        /// <summary>Found by name, wherever the scenes folder is; null when there is no Game scene.</summary>
+        static string GameScenePath => ProjectPaths.Scene("Game");
 
         [InitializeOnLoadMethod]
         static void AutoBuild()

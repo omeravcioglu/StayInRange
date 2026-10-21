@@ -15,15 +15,26 @@ namespace CollarCali.Editor
     /// </summary>
     public static class Scene2EnemySetup
     {
-        const string ScenePath = "Assets/Scenes/2.unity";
-        const string NavMeshPath = "Assets/Scenes/2/NavMesh-Plane.asset";
         const string MarkerName = "Scene2AISetup";
         const string TestPlayerName = "Scene2 Test Player";
+
+        /// <summary>Scene "2", found by name wherever the scenes folder is; null when there is none.</summary>
+        static string ScenePath => ProjectPaths.Scene("2");
+
+        /// <summary>The scene's own baked NavMesh, in the data folder Unity keeps beside it.</summary>
+        static string NavMeshPath => ProjectPaths.SceneDataFolder(ScenePath) + "/NavMesh-Plane.asset";
 
         [MenuItem("Tools/CollarCali/Setup Scene 2 Enemy")]
         public static void SetupFromMenu()
         {
-            var scene = EditorSceneManager.OpenScene(ScenePath, OpenSceneMode.Single);
+            string scenePath = ScenePath;
+            if (scenePath == null)
+            {
+                Debug.LogWarning("[Scene2Enemy] The project has no scene called 2.");
+                return;
+            }
+
+            var scene = EditorSceneManager.OpenScene(scenePath, OpenSceneMode.Single);
             Setup(scene, forceSave: true);
         }
 

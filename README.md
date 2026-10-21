@@ -92,10 +92,10 @@ These scripts were changed to call into the game's own code.
 
 | # | Scene | Purpose |
 |---|---|---|
-| 0 | `Assets/Scenes/Menu.unity` | Main menu, room browser |
-| 1 | `Assets/Scenes/Game.unity` | The co-op level (hospital and lab labyrinths) |
-| 2 | `Assets/Scenes/Lobby.unity` | Ready-up and character selection |
-| – | `Assets/Scenes/Hospitalstart.unity` | Work-in-progress hospital intro cutscene (not in the build yet) |
+| 0 | `Assets/A_StayInRange/Scenes/Menu.unity` | Main menu, room browser |
+| 1 | `Assets/A_StayInRange/Scenes/Game.unity` | The co-op level (hospital and lab labyrinths) |
+| 2 | `Assets/A_StayInRange/Scenes/Lobby.unity` | Ready-up and character selection |
+| – | `Assets/A_StayInRange/Scenes/Hospitalstart.unity` | Work-in-progress hospital intro cutscene (not in the build yet) |
 
 Scenes are loaded by name. The lobby starts the match through Fusion's networked scene load, so every client follows the master client.
 
@@ -116,6 +116,6 @@ Scenes are loaded by name. The lobby starts the match through Fusion's networked
 
 ## About this repository
 
-This public repository is a **showcase**. It contains the documentation and the **174 source files I wrote** for this project. The complete project, including licensed third-party assets that cannot be redistributed, is kept in a private repository.
+This public repository is a **showcase**. It contains the documentation and the **175 source files I wrote** for this project. The complete project, including licensed third-party assets that cannot be redistributed, is kept in a private repository.
 
 Copyright © Omer Avcioglu (McHunter Studio). **All rights reserved.** Viewing only; see [LICENSE](LICENSE).
