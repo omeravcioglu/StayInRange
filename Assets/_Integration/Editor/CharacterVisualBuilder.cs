@@ -53,12 +53,13 @@ namespace CollarCali.EditorTools
         const string PreviewPrefabPath = "Assets/_Integration/Resources/CharacterPreview.prefab";
         const string RemoteBodyChildName = "Player Render";
 
-        static readonly string[] CharacterPrefabPaths =
+        /// <summary>Found by name (ProjectPaths), wherever their folder is.</summary>
+        static readonly string[] CharacterPrefabNames =
         {
-            "Assets/Characters/Character 1.prefab",
-            "Assets/Characters/Character 2.prefab",
-            "Assets/Characters/Character 3.prefab",
-            "Assets/Characters/Character 4.prefab",
+            "Character 1",
+            "Character 2",
+            "Character 3",
+            "Character 4",
         };
 
         [MenuItem("Tools/CollarCali/Build Character Visuals")]
@@ -210,9 +211,10 @@ namespace CollarCali.EditorTools
             log.AppendLine("  ! The character material was not found; falling back to the old " +
                            "Character prefabs. Check CharacterMaterialGuid.");
 
-            for (int i = 0; i < CharacterPrefabPaths.Length; i++)
+            for (int i = 0; i < CharacterPrefabNames.Length; i++)
             {
-                var go = AssetDatabase.LoadAssetAtPath<GameObject>(CharacterPrefabPaths[i]);
+                string path = ProjectPaths.Asset(CharacterPrefabNames[i], "Prefab");
+                var go = path != null ? AssetDatabase.LoadAssetAtPath<GameObject>(path) : null;
                 if (go == null)
                     continue;
 

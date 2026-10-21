@@ -20,7 +20,6 @@ namespace CollarCali.Editor
         const string OutputDir = "Assets/_Integration/Prefabs";
         const string OutputPath = OutputDir + "/LabShaft.prefab";
         const string MaterialDir = "Assets/_Integration/Materials";
-        const string GameScenePath = "Assets/Scenes/Game.unity";
         const string RootName = "LabShaft";
 
         const string LadderPath = "Assets/PlatformPrefabs/Ladder (02) Variant.prefab";
@@ -152,11 +151,12 @@ namespace CollarCali.Editor
 
         static bool TryResolveGameScene(bool openScene, out Scene scene)
         {
-            scene = openScene
-                ? EditorSceneManager.OpenScene(GameScenePath, OpenSceneMode.Single)
+            string gameScenePath = ProjectPaths.Scene("Game");
+            scene = openScene && gameScenePath != null
+                ? EditorSceneManager.OpenScene(gameScenePath, OpenSceneMode.Single)
                 : SceneManager.GetActiveScene();
 
-            if (!scene.IsValid() || scene.path != GameScenePath)
+            if (!scene.IsValid() || scene.path != gameScenePath)
                 return false;
 
             return GameObject.Find(RootName) == null;

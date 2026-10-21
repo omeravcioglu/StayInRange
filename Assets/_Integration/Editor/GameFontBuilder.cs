@@ -265,7 +265,7 @@ namespace CollarCali.EditorTools
                     paths.Add(scene.path);
             }
 
-            foreach (var extra in new[] { "Assets/Scenes/Hospitalstart.unity" })
+            foreach (var extra in new[] { ProjectPaths.Scene("Hospitalstart") })
             {
                 if (!paths.Contains(extra) && System.IO.File.Exists(extra))
                     paths.Add(extra);

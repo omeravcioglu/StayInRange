@@ -17,8 +17,6 @@ namespace CollarCali.Editor
     /// </summary>
     public static class ScenePlayerOverridesApplier
     {
-        const string GameScenePath = "Assets/Scenes/Game.unity";
-
         [MenuItem("Tools/CollarCali/Apply Scene Player Tuning To Prefabs")]
         public static void Apply()
         {
@@ -64,7 +62,15 @@ namespace CollarCali.Editor
 
         static bool TryGetGameScene(out Scene scene)
         {
-            scene = SceneManager.GetSceneByPath(GameScenePath);
+            scene = default;
+            string gameScenePath = ProjectPaths.Scene("Game");
+            if (gameScenePath == null)
+            {
+                Debug.LogError("[CollarCali] The project has no Game scene.");
+                return false;
+            }
+
+            scene = SceneManager.GetSceneByPath(gameScenePath);
             if (scene.isLoaded)
                 return true;
 
@@ -78,7 +84,7 @@ namespace CollarCali.Editor
             if (!EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo())
                 return false;
 
-            scene = EditorSceneManager.OpenScene(GameScenePath, OpenSceneMode.Single);
+            scene = EditorSceneManager.OpenScene(gameScenePath, OpenSceneMode.Single);
             return scene.isLoaded;
         }
 
