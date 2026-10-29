@@ -116,6 +116,6 @@ Scenes are loaded by name. The lobby starts the match through Fusion's networked
 
 ## About this repository
 
-This public repository is a **showcase**. It contains the documentation and the **175 source files I wrote** for this project. The complete project, including licensed third-party assets that cannot be redistributed, is kept in a private repository.
+This public repository is a **showcase**. It contains the documentation and the **177 source files I wrote** for this project. The complete project, including licensed third-party assets that cannot be redistributed, is kept in a private repository.
 
 Copyright © Omer Avcioglu (McHunter Studio). **All rights reserved.** Viewing only; see [LICENSE](LICENSE).

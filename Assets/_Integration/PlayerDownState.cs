@@ -29,11 +29,29 @@ namespace CollarCali
     /// </summary>
     [DisallowMultipleComponent]
     [RequireComponent(typeof(PlayerRagdoll))]
-    public class PlayerDownState : MonoBehaviour
+    public class PlayerDownState : MonoBehaviour, ITelekineticSimulation
     {
-        /// <summary>The body this machine is currently the simulation of, if any. Its pose is what
-        /// the local player's bridge publishes.</summary>
-        public static PlayerDownState LocallySimulated { get; private set; }
+        /// <summary>
+        /// The body this machine is currently the simulation of, if any - its pose is what the local
+        /// player's bridge publishes. A view of the shared TelekineticSimulation slot, which a held or
+        /// thrown prop can occupy instead.
+        /// </summary>
+        public static PlayerDownState LocallySimulated
+        {
+            get => TelekineticSimulation.Local as PlayerDownState;
+            private set
+            {
+                if (value != null)
+                    TelekineticSimulation.Local = value;
+                else if (TelekineticSimulation.Local is PlayerDownState)
+                    TelekineticSimulation.Local = null;
+            }
+        }
+
+        NetworkId ITelekineticSimulation.PublishedId =>
+            _bridge != null && _bridge.Object != null ? _bridge.Object.Id : default;
+
+        ITelekineticTarget ITelekineticSimulation.Target => _bridge;
 
         FpsNetworkBridge _bridge;
         PlayerRagdoll _ragdoll;

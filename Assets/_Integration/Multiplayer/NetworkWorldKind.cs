@@ -11,6 +11,12 @@ namespace CollarCali
         Zombie = 4,
 
         /// <summary>Lite Magic Pack ranged caster; stationary, master-only brain, ragdolls on death.</summary>
-        Magician = 5
+        Magician = 5,
+
+        /// <summary>
+        /// A TelekineticProp - a ladder, a plank - that players lift, place, throw and catch. Not
+        /// master-simulated like the others: whoever is handling it simulates it (see TelekineticProp).
+        /// </summary>
+        Prop = 6
     }
 }

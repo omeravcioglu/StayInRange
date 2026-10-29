@@ -58,8 +58,11 @@ namespace CollarCali
             "InventoryFavOpen", "ToggleTipsCanvas", "InventoryOpen", "Scrolling",
         };
 
-        /// <summary>The Malbers equivalents: both mouse buttons, the action keys, interact and Q.</summary>
-        const string MalbersCarryBlocked = "Action1,Action2,Action3,Action4,Interact,Ability1";
+        /// <summary>
+        /// The Malbers equivalents: both mouse buttons, the action keys, interact and Q - and R and the
+        /// mouse wheel, which turn and tilt a held prop.
+        /// </summary>
+        const string MalbersCarryBlocked = "Action1,Action2,Action3,Action4,Interact,Ability1,Reload,Zoom,LockNextTarget";
 
         /// <summary>Muted while a body is merely targeted, so E lifts it and nothing else.</summary>
         static readonly string[] CowsinsInteractOnly = { "Interacting" };
@@ -120,6 +123,22 @@ namespace CollarCali
 
         public bool IsThirdPerson => _thirdPerson;
         public MAnimal Animal => animal;
+
+        PlayerMovement _fpsMovement;
+
+        /// <summary>On a ladder right now, in whichever of first or third person is active.</summary>
+        public bool IsClimbing
+        {
+            get
+            {
+                if (_thirdPerson)
+                    return animal != null && animal.ActiveState is MalbersAnimations.Ladder;
+
+                if (_fpsMovement == null && fpsRoot != null)
+                    _fpsMovement = fpsRoot.GetComponentInChildren<PlayerMovement>(true);
+                return _fpsMovement != null && _fpsMovement.IsClimbing;
+            }
+        }
 
         /// <summary>True while the player is dead: neither controller runs and mode switches are ignored.</summary>
         public bool IsSuspended => _suspended;

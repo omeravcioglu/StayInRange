@@ -1,28 +1,31 @@
 #if CMPSETUP_COMPLETE
 using System.Collections.Generic;
+using Fusion;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
 namespace CollarCali
 {
     /// <summary>
-    /// The local player's telekinesis: lifting a dead teammate's body, carrying it, throwing it with
-    /// a charged throw, and catching it out of the air.
+    /// The local player's telekinesis: lifting a dead teammate's body - or any TelekineticProp, such
+    /// as a ladder - carrying it, throwing it with a charged throw, and catching it out of the air.
+    /// A prop can also be turned and tilted while held, and placed where it is.
     ///
     /// Exists only on the machine of the player it belongs to (the bridge adds it for the local
     /// player), and works identically in first and third person because it reads the view through
     /// DualPlayerController rather than from either controller directly.
     ///
-    /// AUTHORITY. Nothing here decides who holds a body. Every pickup, catch, drop and throw is a
-    /// REQUEST to the dead player's own machine (FpsNetworkBridge RPCs), which grants it to exactly one
-    /// player; this component reacts when the grant replicates back. What it owns is the feel: the
-    /// grip target the simulation pulls the body towards, the aim and charge, and the prompt.
+    /// AUTHORITY. Nothing here decides who holds anything. Every pickup, catch, drop and throw is a
+    /// REQUEST - to the dead player's own machine for a body (FpsNetworkBridge RPCs), to the host for
+    /// a prop (NetworkWorldActor RPCs) - which grants it to exactly one player; this component reacts
+    /// when the grant replicates back. What it owns is the feel: the grip target the simulation pulls
+    /// the held thing towards, the aim and charge, and the prompt.
     ///
     /// INPUT. It has its own actions, built from the bindings in PlayerTuning, rather than borrowing
-    /// Cowsins' or Malbers', because it has to work whichever of the two is active. While a body is
+    /// Cowsins' or Malbers', because it has to work whichever of the two is active. While something is
     /// held, DualPlayerController mutes the actions of both controllers that share these keys
-    /// (firing, aiming, melee, interact and so on), which is what stops a throw from also firing the
-    /// gun or punching.
+    /// (firing, aiming, melee, interact, reload, the mouse wheel and so on), which is what stops a
+    /// throw from also firing the gun or punching.
     /// </summary>
     [DisallowMultipleComponent]
     public class BodyTelekinesis : MonoBehaviour
@@ -38,6 +41,9 @@ namespace CollarCali
 
         const float CollisionRefreshSeconds = 0.5f;
 
+        /// <summary>Extra room in front of a held prop's furthest reach, so turning it never sweeps the camera.</summary>
+        const float PropHoldMargin = 0.5f;
+
         FpsNetworkBridge _self;
         DualPlayerController _dual;
 
@@ -45,38 +51,45 @@ namespace CollarCali
         InputAction _throwReady;
         InputAction _charge;
         InputAction _cancel;
+        InputAction _turn;
+        InputAction _tilt;
         string _bindingsKey;
 
         Mode _mode;
-        FpsNetworkBridge _held;
+        ITelekineticTarget _held;
 
-        // A body this player let go of, until its owner confirms. Keeps the grip from pulling on a
-        // body that is already on its way out of our hands.
-        FpsNetworkBridge _releasedLocally;
+        // Something this player let go of, until its authority confirms. Keeps the grip from pulling on
+        // a body that is already on its way out of our hands.
+        ITelekineticTarget _releasedLocally;
         float _releaseResendAt;
         bool _releaseWasThrow;
 
-        FpsNetworkBridge _pending;
+        ITelekineticTarget _pending;
         bool _pendingCatch;
         float _pendingUntil;
 
-        FpsNetworkBridge _target;
+        ITelekineticTarget _target;
         bool _targetIsCatch;
 
         bool _charging;
         float _chargeStartedAt;
         float _charge01;
 
+        // How a held prop is turned, relative to the way the carrier faces: it turns with them, and
+        // the wheel adds to it.
+        Quaternion _holdRotation = Quaternion.identity;
+
         readonly List<Collider> _ownColliders = new List<Collider>();
-        FpsNetworkBridge _collisionBody;
+        ITelekineticTarget _collisionTarget;
         float _restoreCollisionsAt = -1f;
         float _nextCollisionRefresh;
 
         BodyCarryHud _hud;
         ThrowTrajectory _trajectory;
 
-        public bool IsHolding => _held != null && _held != _releasedLocally;
-        public FpsNetworkBridge HeldBody => IsHolding ? _held : null;
+        public bool IsHolding => _held != null && !ReferenceEquals(_held, _releasedLocally);
+        public ITelekineticTarget HeldTarget => IsHolding ? _held : null;
+        public FpsNetworkBridge HeldBody => IsHolding ? _held as FpsNetworkBridge : null;
         public bool IsAiming => IsHolding && _mode == Mode.Aiming;
 
         public void Bind(FpsNetworkBridge self)
@@ -91,10 +104,8 @@ namespace CollarCali
                 Local = null;
 
             SetInputEnabled(false);
-            _interact?.Dispose();
-            _throwReady?.Dispose();
-            _charge?.Dispose();
-            _cancel?.Dispose();
+            foreach (var action in Actions())
+                action?.Dispose();
 
             if (_dual != null)
             {
@@ -112,6 +123,13 @@ namespace CollarCali
         {
             SetInputEnabled(false);
         }
+
+        /// <summary>
+        /// Interface references skip Unity's destroyed-object check: a body whose player left or a prop
+        /// that was destroyed still compares unequal to null.
+        /// </summary>
+        static bool Exists(ITelekineticTarget target) =>
+            target is UnityEngine.Object unityObject ? unityObject != null : target != null;
 
         #region Frame
 
@@ -133,8 +151,8 @@ namespace CollarCali
             bool usable = !_self.IsDead && _dual != null && !_dual.IsSuspended;
             if (!usable)
             {
-                // Dead, or between lives. The body's owner releases whatever this player was holding
-                // once it sees the death, so there is nothing to send - only local state to clear.
+                // Dead, or between lives. Whatever decides over the held thing releases it once it sees
+                // the death, so there is nothing to send - only local state to clear.
                 if (_held != null)
                     LoseHeld(silent: true);
                 _pending = null;
@@ -148,8 +166,8 @@ namespace CollarCali
             ExpirePending();
             ResendReleaseIfIgnored();
 
-            // A menu over the game takes the keys: E would drop the body and letting go of a charge
-            // would throw it. The body stays held; a charge in progress is called off.
+            // A menu over the game takes the keys: E would drop what is held and letting go of a charge
+            // would throw it. It stays held; a charge in progress is called off.
             if (UI.UiInput.MenuOpen)
             {
                 _charging = false;
@@ -170,7 +188,7 @@ namespace CollarCali
                 }
             }
 
-            // While a body is in reach, E is ours alone - see DualPlayerController.SetInteractClaimed.
+            // While something is in reach, E is ours alone - see DualPlayerController.SetInteractClaimed.
             _dual.SetInteractClaimed(_mode == Mode.Idle && (_target != null || _pending != null));
 
             RefreshCollisionIgnore();
@@ -180,6 +198,14 @@ namespace CollarCali
         void UpdateIdle()
         {
             _charging = false;
+
+            // On a ladder the crosshair is on the ladder itself, and E must not lift it from under you.
+            if (_dual.IsClimbing)
+            {
+                _target = null;
+                return;
+            }
+
             FindTarget(out _target, out _targetIsCatch);
 
             if (_target != null && _pending == null && Pressed(_interact) && InputAllowed())
@@ -187,7 +213,7 @@ namespace CollarCali
                 _pending = _target;
                 _pendingCatch = _targetIsCatch;
                 _pendingUntil = Time.time + PlayerTuning.Active.catching.requestTimeout;
-                _target.RequestHold(_target.BodyEpoch, _targetIsCatch);
+                _target.RequestHold(_target.Epoch, _targetIsCatch);
             }
         }
 
@@ -203,7 +229,9 @@ namespace CollarCali
                 return;
             }
 
-            if (Pressed(_throwReady) && InputAllowed())
+            UpdateHoldRotation();
+
+            if (Pressed(_throwReady) && InputAllowed() && _held.Throwable)
                 _mode = Mode.Aiming;
         }
 
@@ -225,6 +253,8 @@ namespace CollarCali
                 _dual.SetThirdPersonAimView(false);
                 return;
             }
+
+            UpdateHoldRotation();
 
             // Third person aims from the eyes. Requested every frame rather than once, so it also
             // engages when a switch into third person lands mid-aim; repeated requests do nothing.
@@ -259,65 +289,97 @@ namespace CollarCali
         #region Grants from the network
 
         /// <summary>
-        /// Picks up grants, losses and handovers from the replicated state: whichever body names
-        /// this player as its carrier is the one being held.
+        /// Picks up grants, losses and handovers from the replicated state: whichever body or prop
+        /// names this player as its holder is the one being held.
         /// </summary>
         void RefreshHeldFromNetwork()
         {
             var me = _self.Owner;
-            FpsNetworkBridge granted = null;
+            var granted = FindGranted(me);
 
+            // Our release has been processed: it no longer names us.
+            if (_releasedLocally != null &&
+                (!Exists(_releasedLocally) || !_releasedLocally.IsValidTarget || _releasedLocally.Holder != me))
+                _releasedLocally = null;
+
+            if (ReferenceEquals(granted, _releasedLocally))
+                granted = null;
+
+            if (ReferenceEquals(granted, _held))
+                return;
+
+            if (_held != null)
+                LoseHeld(silent: ReferenceEquals(_held, _releasedLocally));
+
+            if (granted != null)
+                GainHeld(granted);
+        }
+
+        ITelekineticTarget FindGranted(PlayerRef me)
+        {
             foreach (var body in FpsNetworkBridge.All)
             {
                 if (body == null || body == _self || body.Object == null || !body.Object.IsValid)
                     continue;
                 if (!body.IsDead || body.CarriedBy != me)
                     continue;
-                granted = body;
-                break;
+                return body;
             }
 
-            // Our release has been processed: the body no longer names us.
-            if (_releasedLocally != null && (_releasedLocally.CarriedBy != me || !_releasedLocally.IsDead))
-                _releasedLocally = null;
+            foreach (var prop in TelekineticProp.All)
+            {
+                if (prop != null && prop.IsValidTarget && prop.Holder == me)
+                    return prop;
+            }
 
-            if (granted == _releasedLocally)
-                granted = null;
-
-            if (granted == _held)
-                return;
-
-            if (_held != null)
-                LoseHeld(silent: _held == _releasedLocally);
-
-            if (granted != null)
-                GainHeld(granted);
+            return null;
         }
 
-        void GainHeld(FpsNetworkBridge body)
+        void GainHeld(ITelekineticTarget target)
         {
-            bool wasCatch = _pending == body && _pendingCatch;
+            bool wasCatch = ReferenceEquals(_pending, target) && _pendingCatch;
             _pending = null;
-            _held = body;
+            _held = target;
             _mode = Mode.Holding;
             _charging = false;
             _charge01 = 0f;
+            ResetHoldRotation(target);
 
-            // A body this player threw a moment ago and is still simulating in flight is handed back
-            // to its owner: one player simulates one body at a time.
-            var simulated = PlayerDownState.LocallySimulated;
-            if (simulated != null && simulated.Bridge != body && simulated.Bridge != _self)
-                simulated.Bridge.RequestBodyRest(simulated.Bridge.BodyEpoch);
+            HandBackOtherSimulations(target);
 
             if (_dual != null)
                 _dual.SetCarrying(true, PlayerTuning.Active.carry.carrySpeedMultiplier);
 
-            IgnoreCollisions(body);
+            IgnoreCollisions(target);
 
-            var down = body.DownState;
-            GameSfx.PlayShared(SfxId.MagicCast, down != null ? down.BodyPosition : body.transform.position);
+            GameSfx.PlayShared(SfxId.MagicCast, target.Position);
             if (wasCatch)
                 _hud?.Toast("Caught!", new Color(0.55f, 1f, 0.6f));
+        }
+
+        /// <summary>
+        /// Anything this player threw a moment ago and is still simulating in flight is handed back -
+        /// a body to its owner, a prop to the host: one machine simulates one thing at a time, and
+        /// only one of them can be published.
+        /// </summary>
+        void HandBackOtherSimulations(ITelekineticTarget keep)
+        {
+            foreach (var body in FpsNetworkBridge.All)
+            {
+                if (body == null || body == _self || ReferenceEquals(body, keep) ||
+                    body.Object == null || !body.Object.IsValid)
+                    continue;
+
+                ITelekineticTarget asTarget = body;
+                if (asTarget.IsLocallySimulated)
+                    body.RequestBodyRest(body.BodyEpoch);
+            }
+
+            foreach (var prop in TelekineticProp.All)
+            {
+                if (prop != null && !ReferenceEquals(prop, keep) && prop.IsLocallySimulated)
+                    prop.RequestRest(prop.Epoch);
+            }
         }
 
         void LoseHeld(bool silent)
@@ -345,24 +407,30 @@ namespace CollarCali
             if (_pending == null || Time.time < _pendingUntil)
                 return;
 
-            // The owner gave it to somebody else, or the body landed and moved on before the
-            // request got there. Only a catch is worth telling the player about.
+            // Given to somebody else, or it landed and moved on before the request got there. Only a
+            // catch is worth telling the player about.
             if (_pendingCatch)
                 _hud?.Toast("Missed!", new Color(1f, 0.45f, 0.35f));
             _pending = null;
         }
 
         /// <summary>
-        /// A release the owner never processed - lost to a stale epoch, most likely - is sent again
-        /// with the current one, so a body can never stay stuck to a player who let go of it.
+        /// A release that was never processed - lost to a stale epoch, most likely - is sent again with
+        /// the current one, so nothing can stay stuck to a player who let go of it.
         /// </summary>
         void ResendReleaseIfIgnored()
         {
             if (_releasedLocally == null || Time.time < _releaseResendAt)
                 return;
 
+            if (!Exists(_releasedLocally))
+            {
+                _releasedLocally = null;
+                return;
+            }
+
             _releaseResendAt = Time.time + PlayerTuning.Active.catching.requestTimeout;
-            _releasedLocally.RequestRelease(_releasedLocally.BodyEpoch, _releaseWasThrow);
+            _releasedLocally.RequestRelease(_releasedLocally.Epoch, _releaseWasThrow);
         }
 
         #endregion
@@ -374,21 +442,20 @@ namespace CollarCali
             if (_held == null)
                 return;
 
-            var body = _held;
+            var held = _held;
             if (throwIt)
             {
-                var down = body.DownState;
-                // Launched on this machine, which is simulating the body while it is held - so the
-                // throw starts on this frame, not a round trip later. The owner only hears that it is
+                // Launched on this machine, which is simulating it while it is held - so the throw
+                // starts on this frame, not a round trip later. The authority only hears that it is
                 // now in flight, and this machine keeps simulating it until it lands or is caught.
-                down?.LaunchLocal(velocity, spin);
-                GameSfx.PlayShared(SfxId.MagicCast, down != null ? down.BodyPosition : body.transform.position);
+                held.LaunchLocal(velocity, spin);
+                GameSfx.PlayShared(SfxId.MagicCast, held.Position);
             }
 
-            _releasedLocally = body;
+            _releasedLocally = held;
             _releaseWasThrow = throwIt;
             _releaseResendAt = Time.time + PlayerTuning.Active.catching.requestTimeout;
-            body.RequestRelease(body.BodyEpoch, throwIt);
+            held.RequestRelease(held.Epoch, throwIt);
 
             // Back over the shoulder: after a moment when it was a throw, so it can be watched
             // leaving; at once for a drop.
@@ -408,7 +475,9 @@ namespace CollarCali
         /// </summary>
         bool TryReviveHeld()
         {
-            var body = _held;
+            if (!(_held is FpsNetworkBridge body))
+                return false;
+
             var station = ReviveStation.FindFor(body);
             if (station == null || !station.TryRevive(body, _self.transform))
                 return false;
@@ -423,12 +492,14 @@ namespace CollarCali
 
         void Throw(float charge01)
         {
-            if (_held == null || _dual == null || !_dual.TryGetAim(out _, out var forward))
+            if (_held == null || !_held.Throwable || _dual == null || !_dual.TryGetAim(out _, out var forward))
                 return;
 
             var throwing = PlayerTuning.Active.throwing;
             var velocity = ComputeThrowVelocity(forward, charge01, throwing);
-            var spin = Random.insideUnitSphere * throwing.launchSpin;
+            // A body tumbles; a prop flies the way it was aimed, so a ladder thrown to a friend
+            // arrives the right way round to catch.
+            var spin = _held.SupportsRotation ? Vector3.zero : UnityEngine.Random.insideUnitSphere * throwing.launchSpin;
             Release(throwIt: true, velocity, spin);
         }
 
@@ -442,10 +513,10 @@ namespace CollarCali
             return direction * speed + carrier * throwing.inheritCarrierVelocity;
         }
 
-        /// <summary>Called by the simulation when the body has been wedged too long to pull free.</summary>
-        public void OnGripBroken(FpsNetworkBridge body)
+        /// <summary>Called by the simulation when what is held has been wedged too long to pull free.</summary>
+        public void OnGripBroken(ITelekineticTarget target)
         {
-            if (body == null || body != _held)
+            if (target == null || !ReferenceEquals(target, _held))
                 return;
 
             Release(throwIt: false);
@@ -457,53 +528,127 @@ namespace CollarCali
         #region Grip target
 
         /// <summary>
-        /// Where the held body's collar should float, for the simulation on this machine.
+        /// Where the held thing should float, for the simulation on this machine - a body's collar, a
+        /// prop's centre - and which way it should face.
         ///
         /// In front of the eyes in first person and in front of the chest in third person, along the
-        /// camera's aim either way, pulled back from any wall in the way so the body is never pressed
-        /// into geometry.
+        /// camera's aim either way, pulled back from any wall in the way so it is never pressed into
+        /// geometry. A prop floats further out the bigger it is, so turning it never sweeps through
+        /// the carrier's view, and keeps the orientation it was given relative to the carrier.
         /// </summary>
-        public bool TryGetGripTarget(FpsNetworkBridge body, out Vector3 target, out Quaternion facing,
+        public bool TryGetGripTarget(ITelekineticTarget held, out Vector3 target, out Quaternion facing,
             out Vector3 carrierVelocity)
         {
             target = default;
             facing = Quaternion.identity;
             carrierVelocity = default;
 
-            if (body == null || body != _held || body == _releasedLocally || _dual == null)
+            if (held == null || !ReferenceEquals(held, _held) || ReferenceEquals(held, _releasedLocally) ||
+                _dual == null)
                 return false;
             if (!_dual.TryGetAim(out var origin, out var forward))
                 return false;
 
             var carry = PlayerTuning.Active.carry;
 
-            var flat = Vector3.ProjectOnPlane(forward, Vector3.up);
-            if (flat.sqrMagnitude < 0.0001f)
-                flat = Vector3.ProjectOnPlane(_dual.transform.forward, Vector3.up);
-            flat.Normalize();
+            var flat = FlatForward(forward);
             var right = Vector3.Cross(Vector3.up, flat);
 
-            // Pitch limited, so looking at your feet does not drive the body into the floor.
+            // Pitch limited, so looking at your feet does not drive it into the floor.
             var aim = forward;
             aim.y = Mathf.Clamp(aim.y, -0.5f, 0.6f);
             aim.Normalize();
 
-            float distance = carry.holdDistance * (_mode == Mode.Aiming ? 0.85f : 1f);
+            float hold = carry.holdDistance;
+            if (held.SupportsRotation)
+                hold = Mathf.Max(hold, held.HoldReach + PropHoldMargin);
+            float distance = hold * (_mode == Mode.Aiming ? 0.85f : 1f);
             var desired = origin + aim * distance + right * carry.holdOffset.x + Vector3.up * carry.holdOffset.y;
 
             var toDesired = desired - origin;
             float length = toDesired.magnitude;
             if (length > 0.01f &&
                 Physics.SphereCast(origin, 0.25f, toDesired / length, out var hit, length,
-                    HiddenSpawnUtility.DefaultSightBlockers(), QueryTriggerInteraction.Ignore))
+                    HiddenSpawnUtility.DefaultSightBlockers(), QueryTriggerInteraction.Ignore) &&
+                !IsPartOf(held, hit.collider))
             {
                 desired = origin + toDesired / length * Mathf.Max(0.35f, hit.distance - carry.wallPadding);
             }
 
             target = desired;
-            facing = Quaternion.LookRotation(-flat, Vector3.up);
+            facing = held.SupportsRotation
+                ? Quaternion.LookRotation(flat, Vector3.up) * _holdRotation
+                : Quaternion.LookRotation(-flat, Vector3.up);
             carrierVelocity = _dual.GetBodyVelocity();
             return true;
+        }
+
+        Vector3 FlatForward(Vector3 forward)
+        {
+            var flat = Vector3.ProjectOnPlane(forward, Vector3.up);
+            if (flat.sqrMagnitude < 0.0001f && _dual != null)
+                flat = Vector3.ProjectOnPlane(_dual.transform.forward, Vector3.up);
+            if (flat.sqrMagnitude < 0.0001f)
+                flat = Vector3.forward;
+            return flat.normalized;
+        }
+
+        /// <summary>
+        /// A prop is held the way it was lying relative to the carrier - a ladder leaning on a wall
+        /// comes away upright - squared up to the nearest turn step, so it can be put back square.
+        /// </summary>
+        void ResetHoldRotation(ITelekineticTarget target)
+        {
+            _holdRotation = Quaternion.identity;
+            if (target == null || !target.SupportsRotation)
+                return;
+
+            var forward = _dual != null && _dual.TryGetAim(out _, out var aim) ? aim : transform.forward;
+            var facing = Quaternion.LookRotation(FlatForward(forward), Vector3.up);
+            _holdRotation = SnapToStep(Quaternion.Inverse(facing) * target.Rotation, TurnStep(target));
+        }
+
+        /// <summary>The wheel turns a held prop about the vertical; with the tilt key held it tips it towards or away from the carrier.</summary>
+        void UpdateHoldRotation()
+        {
+            if (_held == null || !_held.SupportsRotation || !InputAllowed())
+                return;
+
+            int steps = WheelSteps(_turn);
+            if (steps == 0)
+                return;
+
+            var axis = Held(_tilt) ? Vector3.right : Vector3.up;
+            _holdRotation = Quaternion.AngleAxis(steps * TurnStep(_held), axis) * _holdRotation;
+        }
+
+        static float TurnStep(ITelekineticTarget target) =>
+            target is TelekineticProp prop ? prop.TurnStepDegrees : 15f;
+
+        static Quaternion SnapToStep(Quaternion rotation, float step)
+        {
+            if (step <= 0f)
+                return rotation;
+
+            var euler = rotation.eulerAngles;
+            euler.x = Mathf.Round(euler.x / step) * step;
+            euler.y = Mathf.Round(euler.y / step) * step;
+            euler.z = Mathf.Round(euler.z / step) * step;
+            return Quaternion.Euler(euler);
+        }
+
+        /// <summary>Whole wheel notches this frame. Some platforms report 120 per notch and some 1.</summary>
+        static int WheelSteps(InputAction action)
+        {
+            if (action == null)
+                return 0;
+
+            float value = action.ReadValue<float>();
+            if (Mathf.Abs(value) < 0.01f)
+                return 0;
+
+            int steps = Mathf.Abs(value) >= 60f ? Mathf.RoundToInt(value / 120f) : 0;
+            return steps != 0 ? steps : (value > 0f ? 1 : -1);
         }
 
         #endregion
@@ -511,15 +656,15 @@ namespace CollarCali
         #region Targeting
 
         /// <summary>
-        /// The body a press of the interact key would act on: a flying one inside catch range takes
-        /// priority, otherwise the loose body closest to the middle of the view.
+        /// What a press of the interact key would act on: whatever the crosshair is on first, then a
+        /// flying body or prop inside catch range, then the loose one closest to the middle of the view.
         /// </summary>
-        void FindTarget(out FpsNetworkBridge best, out bool isCatch)
+        void FindTarget(out ITelekineticTarget best, out bool isCatch)
         {
             best = null;
             isCatch = false;
 
-            // Whatever the crosshair is on comes first: pointing at a body should lift it from a
+            // Whatever the crosshair is on comes first: pointing at something should lift it from a
             // normal distance, not only from standing on top of it.
             if (TryCrosshairTarget(out best, out isCatch))
                 return;
@@ -528,6 +673,7 @@ namespace CollarCali
                 return;
 
             var tuning = PlayerTuning.Active;
+            float inReach = Mathf.Max(tuning.carry.pickupDistance, tuning.catching.maxCatchDistance);
             float bestScore = float.MaxValue;
 
             foreach (var body in FpsNetworkBridge.All)
@@ -541,33 +687,96 @@ namespace CollarCali
                 if (down == null || !down.IsDown || !down.CanRagdoll)
                     continue;
 
-                bool flying = body.Phase == BodyPhase.Thrown;
-                float maxDistance = flying ? tuning.catching.maxCatchDistance : tuning.carry.pickupDistance;
-                float cone = flying ? tuning.catching.catchViewAngle : tuning.carry.pickupViewAngle;
-
-                var position = down.BodyPosition;
-                var offset = position - origin;
-                float distance = offset.magnitude;
-                if (distance > maxDistance)
-                    continue;
-
-                // Right at your feet the angle means nothing - looking straight ahead still counts.
-                float angle = distance > 0.9f ? Vector3.Angle(forward, offset) : 0f;
-                if (angle > cone)
-                    continue;
-
-                if (Physics.Linecast(origin, position, out var hit, HiddenSpawnUtility.DefaultSightBlockers(),
-                        QueryTriggerInteraction.Ignore) && hit.distance < distance - 0.3f)
-                    continue;
-
-                float score = angle / cone + distance / maxDistance - (flying ? 1f : 0f);
-                if (score >= bestScore)
-                    continue;
-
-                bestScore = score;
-                best = body;
-                isCatch = flying;
+                Consider(body, down.BodyPosition, origin, forward, ref best, ref isCatch, ref bestScore);
             }
+
+            foreach (var prop in TelekineticProp.All)
+            {
+                if (prop == null || !prop.IsValidTarget || prop.Holder != PlayerRef.None)
+                    continue;
+
+                // Out of reach even at its furthest end: not worth measuring.
+                float limit = inReach + prop.HoldReach;
+                if ((prop.Position - origin).sqrMagnitude > limit * limit)
+                    continue;
+
+                // A long prop is in reach when its nearest end is, not only its middle.
+                Consider(prop, NearestPoint(prop, origin), origin, forward, ref best, ref isCatch, ref bestScore);
+            }
+        }
+
+        void Consider(ITelekineticTarget candidate, Vector3 position, Vector3 origin, Vector3 forward,
+            ref ITelekineticTarget best, ref bool isCatch, ref float bestScore)
+        {
+            var tuning = PlayerTuning.Active;
+            bool flying = candidate.Phase == BodyPhase.Thrown;
+            float maxDistance = flying ? tuning.catching.maxCatchDistance : tuning.carry.pickupDistance;
+            float cone = flying ? tuning.catching.catchViewAngle : tuning.carry.pickupViewAngle;
+
+            var offset = position - origin;
+            float distance = offset.magnitude;
+            if (distance > maxDistance)
+                return;
+
+            // Right at your feet the angle means nothing - looking straight ahead still counts.
+            float angle = distance > 0.9f ? Vector3.Angle(forward, offset) : 0f;
+            if (angle > cone)
+                return;
+
+            if (Physics.Linecast(origin, position, out var hit, HiddenSpawnUtility.DefaultSightBlockers(),
+                    QueryTriggerInteraction.Ignore) && hit.distance < distance - 0.3f &&
+                !IsPartOf(candidate, hit.collider))
+                return;
+
+            float score = angle / cone + distance / maxDistance - (flying ? 1f : 0f);
+            if (score >= bestScore)
+                return;
+
+            bestScore = score;
+            best = candidate;
+            isCatch = flying;
+        }
+
+        /// <summary>The point of a prop nearest to a position, for judging reach.</summary>
+        static Vector3 NearestPoint(ITelekineticTarget target, Vector3 from)
+        {
+            var best = target.Position;
+            float bestSq = (best - from).sqrMagnitude;
+
+            var colliders = target.Colliders;
+            for (int i = 0; i < colliders.Count; i++)
+            {
+                var collider = colliders[i];
+                if (collider == null || !collider.enabled || !collider.gameObject.activeInHierarchy)
+                    continue;
+                if (collider is MeshCollider mesh && !mesh.convex)
+                    continue;
+
+                var point = collider.ClosestPoint(from);
+                float sq = (point - from).sqrMagnitude;
+                if (sq < bestSq)
+                {
+                    bestSq = sq;
+                    best = point;
+                }
+            }
+
+            return best;
+        }
+
+        static bool IsPartOf(ITelekineticTarget target, Collider collider)
+        {
+            if (target == null || collider == null)
+                return false;
+
+            var colliders = target.Colliders;
+            for (int i = 0; i < colliders.Count; i++)
+            {
+                if (colliders[i] == collider)
+                    return true;
+            }
+
+            return false;
         }
 
         const float CrosshairRadius = 0.2f;
@@ -582,17 +791,17 @@ namespace CollarCali
         float _ownCollidersRefreshedAt = -999f;
 
         /// <summary>
-        /// The dead body the crosshair is on, if one is in reach and nothing solid is in front of it.
+        /// The dead body or prop the crosshair is on, if it is in reach and nothing solid is in front of it.
         ///
         /// A slightly fat ray (limbs are thin) from the camera actually rendering the view, through
         /// every hit in order: this player's own colliders are skipped - in third person the ray
-        /// passes through the character first - and the first thing that is not a body ends the
-        /// search, so a wall between you and a body blocks it. Range is measured from the player,
+        /// passes through the character first - and the first thing that is neither a body nor a prop
+        /// ends the search, so a wall between you and it blocks it. Range is measured from the player,
         /// so the third-person camera sitting metres behind them does not eat into it.
         /// </summary>
-        bool TryCrosshairTarget(out FpsNetworkBridge body, out bool isCatch)
+        bool TryCrosshairTarget(out ITelekineticTarget target, out bool isCatch)
         {
-            body = null;
+            target = null;
             isCatch = false;
 
             if (_dual == null || !_dual.TryGetCrosshairRay(out var ray))
@@ -621,11 +830,11 @@ namespace CollarCali
                 if (collider == null || _ownColliderSet.Contains(collider))
                     continue;
 
-                var owner = BodyOwning(collider);
+                var owner = TargetOwning(collider);
                 if (owner == null)
-                    return false; // a wall, a crate, an enemy - the crosshair is on that, not a body
+                    return false; // a wall, a crate, an enemy - the crosshair is on that, not on something to lift
 
-                if (!owner.IsDead || owner.IsCarried)
+                if (!owner.IsValidTarget || owner.Holder != PlayerRef.None)
                     return false;
 
                 bool flying = owner.Phase == BodyPhase.Thrown;
@@ -634,7 +843,7 @@ namespace CollarCali
                 if (fromPlayer > limit)
                     return false;
 
-                body = owner;
+                target = owner;
                 isCatch = flying;
                 return true;
             }
@@ -642,8 +851,8 @@ namespace CollarCali
             return false;
         }
 
-        /// <summary>The dead player whose ragdoll this collider is a bone of, or null.</summary>
-        FpsNetworkBridge BodyOwning(Collider collider)
+        /// <summary>The dead player whose ragdoll this collider is a bone of, or the prop it belongs to, or null.</summary>
+        ITelekineticTarget TargetOwning(Collider collider)
         {
             foreach (var bridge in FpsNetworkBridge.All)
             {
@@ -662,7 +871,8 @@ namespace CollarCali
                 }
             }
 
-            return null;
+            var prop = collider.GetComponentInParent<TelekineticProp>();
+            return prop != null && IsPartOf(prop, collider) ? prop : null;
         }
 
         void RefreshOwnColliders()
@@ -686,22 +896,22 @@ namespace CollarCali
         #region Collisions
 
         /// <summary>
-        /// The carrier's own colliders pass through the body they hold. Without this the floating
-        /// body shoves its carrier around - and in first person the carrier's capsule is right
-        /// behind the grip point.
+        /// The carrier's own colliders pass through what they hold. Without this the floating body or
+        /// prop shoves its carrier around - and in first person the carrier's capsule is right behind
+        /// the grip point.
         /// </summary>
-        void IgnoreCollisions(FpsNetworkBridge body)
+        void IgnoreCollisions(ITelekineticTarget target)
         {
-            if (_collisionBody != null && _collisionBody != body)
+            if (_collisionTarget != null && !ReferenceEquals(_collisionTarget, target))
                 RestoreCollisions();
 
             _ownColliders.Clear();
             _dual?.CollectOwnColliders(_ownColliders);
 
-            _collisionBody = body;
+            _collisionTarget = target;
             _restoreCollisionsAt = -1f;
             _nextCollisionRefresh = Time.time + CollisionRefreshSeconds;
-            body.DownState?.Ragdoll?.IgnoreCollisionsWith(_ownColliders, true);
+            target.IgnoreCollisionsWith(_ownColliders, true);
         }
 
         /// <summary>
@@ -710,34 +920,34 @@ namespace CollarCali
         /// </summary>
         void RefreshCollisionIgnore()
         {
-            if (!IsHolding || _collisionBody != _held || Time.time < _nextCollisionRefresh)
+            if (!IsHolding || !ReferenceEquals(_collisionTarget, _held) || Time.time < _nextCollisionRefresh)
                 return;
 
             _nextCollisionRefresh = Time.time + CollisionRefreshSeconds;
             _ownColliders.Clear();
             _dual?.CollectOwnColliders(_ownColliders);
-            _held.DownState?.Ragdoll?.IgnoreCollisionsWith(_ownColliders, true);
+            _held.IgnoreCollisionsWith(_ownColliders, true);
         }
 
         void ScheduleCollisionRestore()
         {
-            if (_collisionBody == null)
+            if (_collisionTarget == null)
                 return;
             _restoreCollisionsAt = Time.time + PlayerTuning.Active.throwing.ignoreThrowerSeconds;
         }
 
         void RestoreCollisionsIfDue()
         {
-            if (_collisionBody == null || _restoreCollisionsAt < 0f || Time.time < _restoreCollisionsAt)
+            if (_collisionTarget == null || _restoreCollisionsAt < 0f || Time.time < _restoreCollisionsAt)
                 return;
             RestoreCollisions();
         }
 
         void RestoreCollisions()
         {
-            if (_collisionBody != null)
-                _collisionBody.DownState?.Ragdoll?.IgnoreCollisionsWith(_ownColliders, false);
-            _collisionBody = null;
+            if (Exists(_collisionTarget))
+                _collisionTarget.IgnoreCollisionsWith(_ownColliders, false);
+            _collisionTarget = null;
             _restoreCollisionsAt = -1f;
         }
 
@@ -766,12 +976,12 @@ namespace CollarCali
                     }
                     else if (_target != null)
                     {
-                        string who = _target.DisplayName;
+                        string what = _target.DisplayName;
                         if (_targetIsCatch)
-                            _hud.SetPrompt("[" + interact + "]  CATCH " + who.ToUpperInvariant() + "!",
+                            _hud.SetPrompt("[" + interact + "]  CATCH " + what.ToUpperInvariant() + "!",
                                 BodyCarryHud.Style.Urgent);
                         else
-                            _hud.SetPrompt("[" + interact + "]  Lift " + who, BodyCarryHud.Style.Normal);
+                            _hud.SetPrompt("[" + interact + "]  Lift " + what, BodyCarryHud.Style.Normal);
                     }
                     else
                     {
@@ -782,13 +992,7 @@ namespace CollarCali
                 case Mode.Holding:
                     _trajectory.Hide();
                     _hud.SetCharge(false, 0f, 0f);
-
-                    // Beside a station the same key revives instead - see TryReviveHeld.
-                    string letGo = _held != null && ReviveStation.FindFor(_held) != null
-                        ? "Revive " + _held.DisplayName
-                        : "Drop";
-                    _hud.SetPrompt("[" + interact + "]  " + letGo + "      [" + KeyName(_throwReady) + "]  Throw",
-                        BodyCarryHud.Style.Normal);
+                    _hud.SetPrompt(HoldingPrompt(interact), BodyCarryHud.Style.Normal);
                     break;
 
                 case Mode.Aiming:
@@ -801,11 +1005,10 @@ namespace CollarCali
                     float speed = Mathf.Lerp(tuning.throwing.minThrowForce, tuning.throwing.maxThrowForce, shaped);
                     _hud.SetCharge(true, _charge01, speed);
 
-                    if (tuning.throwing.showTrajectory && _held != null && _held.DownState != null &&
-                        _dual.TryGetAim(out _, out var forward))
+                    if (tuning.throwing.showTrajectory && _held != null && _dual.TryGetAim(out _, out var forward))
                     {
                         var velocity = ComputeThrowVelocity(forward, _charge01, tuning.throwing);
-                        _trajectory.Show(_held.DownState.BodyPosition, velocity, _charge01, tuning.throwing);
+                        _trajectory.Show(_held.Position, velocity, _charge01, tuning.throwing);
                     }
                     else
                     {
@@ -815,9 +1018,40 @@ namespace CollarCali
             }
         }
 
+        string HoldingPrompt(string interact)
+        {
+            if (_held == null)
+                return null;
+
+            // Beside a station the same key revives instead - see TryReviveHeld.
+            var body = _held as FpsNetworkBridge;
+            string letGo = body != null && ReviveStation.FindFor(body) != null
+                ? "Revive " + body.DisplayName
+                : _held.DropVerb;
+
+            string prompt = "[" + interact + "]  " + letGo;
+            if (_held.Throwable)
+                prompt += "      [" + KeyName(_throwReady) + "]  Throw";
+            // Two key caps joined by a plus: PromptLine makes every [..] one cap.
+            if (_held.SupportsRotation)
+                prompt += "      [" + KeyName(_turn) + "]  Turn      [" + KeyName(_tilt) + "] + [" +
+                          KeyName(_turn) + "]  Tilt";
+            return prompt;
+        }
+
         #endregion
 
         #region Input
+
+        IEnumerable<InputAction> Actions()
+        {
+            yield return _interact;
+            yield return _throwReady;
+            yield return _charge;
+            yield return _cancel;
+            yield return _turn;
+            yield return _tilt;
+        }
 
         void EnsureInput()
         {
@@ -825,7 +1059,8 @@ namespace CollarCali
             // Interact is whatever key interacts everywhere else, rebound in settings or not.
             string interactBinding = GameSettings.KeyPath("Interacting") ?? bindings.interactBinding;
             string key = interactBinding + "|" + bindings.throwReadyBinding + "|" +
-                         bindings.chargeBinding + "|" + bindings.cancelBinding;
+                         bindings.chargeBinding + "|" + bindings.cancelBinding + "|" +
+                         bindings.turnBinding + "|" + bindings.tiltBinding;
             if (key == _bindingsKey && _interact != null)
             {
                 SetInputEnabled(isActiveAndEnabled);
@@ -834,21 +1069,22 @@ namespace CollarCali
 
             // Rebuilt when the bindings change, so they can be edited in the tuning asset mid-session.
             _bindingsKey = key;
-            _interact?.Dispose();
-            _throwReady?.Dispose();
-            _charge?.Dispose();
-            _cancel?.Dispose();
+            foreach (var action in Actions())
+                action?.Dispose();
 
             _interact = new InputAction("Telekinesis Interact", InputActionType.Button, interactBinding);
             _throwReady = new InputAction("Telekinesis Throw Ready", InputActionType.Button, bindings.throwReadyBinding);
             _charge = new InputAction("Telekinesis Charge", InputActionType.Button, bindings.chargeBinding);
             _cancel = new InputAction("Telekinesis Cancel", InputActionType.Button, bindings.cancelBinding);
+            // Pass-through: the wheel is a per-frame delta, read as it comes.
+            _turn = new InputAction("Telekinesis Turn", InputActionType.PassThrough, bindings.turnBinding);
+            _tilt = new InputAction("Telekinesis Tilt", InputActionType.Button, bindings.tiltBinding);
             SetInputEnabled(isActiveAndEnabled);
         }
 
         void SetInputEnabled(bool enabled)
         {
-            foreach (var action in new[] { _interact, _throwReady, _charge, _cancel })
+            foreach (var action in Actions())
             {
                 if (action == null)
                     continue;
@@ -877,6 +1113,9 @@ namespace CollarCali
                 case "<Mouse>/leftButton": return "LMB";
                 case "<Mouse>/rightButton": return "RMB";
                 case "<Mouse>/middleButton": return "MMB";
+                case "<Mouse>/scroll":
+                case "<Mouse>/scroll/y":
+                    return "WHEEL";
             }
 
             return InputControlPath.ToHumanReadableString(path,

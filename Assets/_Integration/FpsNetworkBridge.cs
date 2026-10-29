@@ -14,7 +14,7 @@ namespace CollarCali
     /// remote clones never enable local-only Cowsins systems.
     /// </summary>
     [DefaultExecutionOrder(-200)]
-    public class FpsNetworkBridge : NetworkBehaviour, INetworkedDamageRouter, IDamageable
+    public class FpsNetworkBridge : NetworkBehaviour, INetworkedDamageRouter, IDamageable, ITelekineticTarget
     {
         [Header("FPS Engine")]
         [SerializeField] GameObject fpsRoot;
@@ -321,9 +321,10 @@ namespace CollarCali
         /// </summary>
         void PublishDrivenBody()
         {
-            var simulated = PlayerDownState.LocallySimulated;
-            if (simulated == null || !simulated.IsSimulatedHere || simulated.Bridge == null ||
-                simulated.Bridge.Object == null || !simulated.Bridge.Object.IsValid)
+            // A body or a prop - whatever this machine is simulating on a player's behalf.
+            var simulated = TelekineticSimulation.Local;
+            var id = simulated != null && simulated.IsSimulatedHere ? simulated.PublishedId : default;
+            if (!id.IsValid)
             {
                 if (DrivenBody != default)
                     DrivenBody = default;
@@ -333,7 +334,7 @@ namespace CollarCali
             simulated.ReadPublishedPose(out var hips, out var hipsRotation, out var chest,
                 out var chestRotation, out var velocity);
 
-            DrivenBody = simulated.Bridge.Object.Id;
+            DrivenBody = id;
             DrivenHipsPosition = hips;
             DrivenHipsRotation = hipsRotation;
             DrivenChestPosition = chest;
@@ -1035,6 +1036,46 @@ namespace CollarCali
 
         /// <summary>This player's ragdoll and downed state. Exists on every machine once the player has been rendered.</summary>
         public PlayerDownState DownState => _downState;
+
+        #region As a telekinesis target (a dead player's body)
+
+        static readonly Collider[] NoColliders = new Collider[0];
+
+        bool ITelekineticTarget.IsValidTarget =>
+            Object != null && Object.IsValid && IsDead &&
+            _downState != null && _downState.IsDown && _downState.CanRagdoll;
+
+        int ITelekineticTarget.Epoch => BodyEpoch;
+        PlayerRef ITelekineticTarget.Holder => CarriedBy;
+
+        Vector3 ITelekineticTarget.Position =>
+            _downState != null ? _downState.BodyPosition : transform.position;
+
+        Quaternion ITelekineticTarget.Rotation =>
+            _downState != null && _downState.Ragdoll != null && _downState.Ragdoll.Hips != null
+                ? _downState.Ragdoll.Hips.rotation
+                : transform.rotation;
+
+        IReadOnlyList<Collider> ITelekineticTarget.Colliders =>
+            _downState != null && _downState.Ragdoll != null ? _downState.Ragdoll.Colliders : NoColliders;
+
+        // A body hangs from its collar; it is not aimed or placed.
+        bool ITelekineticTarget.SupportsRotation => false;
+        bool ITelekineticTarget.Throwable => true;
+        string ITelekineticTarget.DropVerb => "Drop";
+        float ITelekineticTarget.HoldReach => 0f;
+
+        bool ITelekineticTarget.IsLocallySimulated => _downState != null && _downState.IsSimulatedHere;
+
+        void ITelekineticTarget.RequestRest(int epoch) => RequestBodyRest(epoch);
+
+        bool ITelekineticTarget.LaunchLocal(Vector3 velocity, Vector3 spin) =>
+            _downState != null && _downState.LaunchLocal(velocity, spin);
+
+        void ITelekineticTarget.IgnoreCollisionsWith(IReadOnlyList<Collider> others, bool ignore) =>
+            _downState?.Ragdoll?.IgnoreCollisionsWith(others, ignore);
+
+        #endregion
 
         /// <summary>
         /// Adds the ragdoll and downed-state components on first use rather than requiring them on

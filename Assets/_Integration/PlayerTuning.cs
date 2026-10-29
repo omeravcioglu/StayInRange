@@ -234,6 +234,13 @@ namespace CollarCali
 
             [Tooltip("Leaves throw-ready mode without throwing.")]
             public string cancelBinding = "<Mouse>/rightButton";
+
+            [Tooltip("Turns a held object - a ladder, a plank - about the vertical, one step per notch. " +
+                     "Bodies are not turned.")]
+            public string turnBinding = "<Mouse>/scroll/y";
+
+            [Tooltip("Held while turning, tips a held object towards or away from you instead.")]
+            public string tiltBinding = "<Keyboard>/r";
         }
 
         [System.Serializable]

@@ -22,6 +22,24 @@ namespace CollarCali
         [Networked] public int AnimState { get; set; }
         [Networked] public float AnimTime { get; set; }
 
+        // A telekinetic prop's handling (Kind Prop only) - see TelekineticProp. The same scheme as a
+        // dead player's body on FpsNetworkBridge, with the host as the one authority deciding.
+
+        /// <summary>Who holds the prop in a telekinetic grip, or None.</summary>
+        [Networked] public PlayerRef PropHolder { get; set; }
+
+        /// <summary>Whose machine simulates it: the holder, then the thrower until it lands. None: the host.</summary>
+        [Networked] public PlayerRef PropDriver { get; set; }
+
+        /// <summary>The prop's <see cref="BodyPhase"/>, as a byte.</summary>
+        [Networked] public byte PropPhase { get; set; }
+
+        /// <summary>Bumped on every change of who holds or simulates it; requests carrying an older one are refused.</summary>
+        [Networked] public int PropEpoch { get; set; }
+
+        /// <summary>Put down and frozen where it was placed, for everyone, until somebody lifts it again.</summary>
+        [Networked] public NetworkBool PropFrozen { get; set; }
+
         static readonly Dictionary<GameObject, NetworkWorldActor> _bySource =
             new Dictionary<GameObject, NetworkWorldActor>();
 
@@ -36,6 +54,8 @@ namespace CollarCali
         float _nextBindAttempt;
 
         public GameObject Source => _source;
+
+        public bool IsProp => Kind == (int)NetworkWorldKind.Prop;
 
         public override void Spawned()
         {
@@ -114,7 +134,16 @@ namespace CollarCali
                 return;
             }
 
-            if (!HasStateAuthority || _source == null)
+            if (!HasStateAuthority)
+                return;
+
+            if (IsProp)
+            {
+                MaintainProp();
+                return;
+            }
+
+            if (_source == null)
                 return;
             CaptureAnimator();
         }
@@ -122,6 +151,11 @@ namespace CollarCali
         void LateUpdate()
         {
             if (Object == null || !Object.IsValid || _source == null)
+                return;
+
+            // A prop moves itself: it decides on every machine whether it is simulated there or
+            // follows someone else, and the host's copy keeps this transform up to date.
+            if (IsProp)
                 return;
 
             var target = ResolveSyncTransform();
@@ -195,6 +229,12 @@ namespace CollarCali
             SetSource(source);
             SceneKey = sceneKey;
             Kind = (int)kind;
+
+            if (kind == NetworkWorldKind.Prop)
+            {
+                var prop = source != null ? source.GetComponent<TelekineticProp>() : null;
+                PropFrozen = prop != null && prop.StartsFrozen;
+            }
         }
 
         public void BindSource(GameObject source, int sceneKey, NetworkWorldKind kind)
@@ -286,6 +326,117 @@ namespace CollarCali
             victim.RPC_SetCreepGrab(Object.Id, grabbed);
             return true;
         }
+
+        #region Telekinetic props
+
+        /// <summary>
+        /// Lifting and catching are the same request: put the prop in my grip. Granted only while
+        /// nobody holds it, only if the sender saw the current epoch, and only to a living player -
+        /// so of two players catching the same throw, exactly one succeeds. Mirrors
+        /// FpsNetworkBridge.RPC_RequestHold.
+        /// </summary>
+        [Rpc(RpcSources.All, RpcTargets.StateAuthority)]
+        public void RPC_PropHold(int epoch, NetworkBool catching, RpcInfo info = default)
+        {
+            var source = SenderOf(info);
+            if (!IsProp || PropHolder != PlayerRef.None || epoch != PropEpoch)
+                return;
+
+            var requester = FpsNetworkBridge.FindByPlayer(source);
+            if (requester == null || requester.IsDead)
+                return;
+
+            // A catch is only valid while the prop is actually in flight; a lift works either way,
+            // frozen in place or not.
+            if (catching && (BodyPhase)PropPhase != BodyPhase.Thrown)
+                return;
+
+            PropHolder = source;
+            PropDriver = source;
+            PropPhase = (byte)BodyPhase.Held;
+            PropFrozen = false;
+            PropEpoch++;
+        }
+
+        /// <summary>
+        /// The holder let go. Placed: frozen at exactly the pose they let go at, the same on every
+        /// machine. Otherwise - thrown, or dropped with nothing under it - in flight, still simulated
+        /// by the same machine until it lands or somebody catches it.
+        /// </summary>
+        [Rpc(RpcSources.All, RpcTargets.StateAuthority)]
+        public void RPC_PropRelease(int epoch, NetworkBool place, Vector3 position, Quaternion rotation,
+            RpcInfo info = default)
+        {
+            var source = SenderOf(info);
+            if (!IsProp || PropHolder != source || epoch != PropEpoch)
+                return;
+
+            PropHolder = PlayerRef.None;
+            PropEpoch++;
+
+            if (!place)
+            {
+                PropPhase = (byte)BodyPhase.Thrown;
+                return;
+            }
+
+            PropDriver = PlayerRef.None;
+            PropPhase = (byte)BodyPhase.Loose;
+            PropFrozen = true;
+            MovePropTo(position, rotation);
+        }
+
+        /// <summary>A flight has ended. The host takes the simulation back, from exactly where it ended.</summary>
+        [Rpc(RpcSources.All, RpcTargets.StateAuthority)]
+        public void RPC_PropRest(int epoch, Vector3 position, Quaternion rotation, RpcInfo info = default)
+        {
+            var source = SenderOf(info);
+            if (!IsProp || PropDriver != source || PropHolder != PlayerRef.None || epoch != PropEpoch)
+                return;
+
+            PropDriver = PlayerRef.None;
+            PropPhase = (byte)BodyPhase.Loose;
+            PropEpoch++;
+            MovePropTo(position, rotation);
+        }
+
+        /// <summary>
+        /// The host's standing duty for a prop: whoever holds or simulates it must still be in the
+        /// session and alive, or it is taken back - a prop is never stranded in the hands of a player
+        /// who has left or died.
+        /// </summary>
+        void MaintainProp()
+        {
+            if (PropHolder == PlayerRef.None && PropDriver == PlayerRef.None)
+                return;
+
+            var holder = PropHolder != PlayerRef.None ? FpsNetworkBridge.FindByPlayer(PropHolder) : null;
+            var driver = PropDriver != PlayerRef.None ? FpsNetworkBridge.FindByPlayer(PropDriver) : null;
+            bool holderGone = PropHolder != PlayerRef.None && (holder == null || holder.IsDead);
+            bool driverGone = PropDriver != PlayerRef.None && (driver == null || driver.IsDead);
+            if (!holderGone && !driverGone)
+                return;
+
+            PropHolder = PlayerRef.None;
+            PropDriver = PlayerRef.None;
+            PropPhase = (byte)BodyPhase.Loose;
+            PropEpoch++;
+        }
+
+        /// <summary>Puts the networked pose - and the host's own copy of the prop - exactly there.</summary>
+        void MovePropTo(Vector3 position, Quaternion rotation)
+        {
+            transform.SetPositionAndRotation(position, rotation);
+            var prop = _source != null ? _source.GetComponent<TelekineticProp>() : null;
+            if (prop != null)
+                prop.SnapTo(position, rotation);
+        }
+
+        /// <summary>The player an RPC came from - this machine's own player when it called itself.</summary>
+        PlayerRef SenderOf(RpcInfo info) =>
+            info.IsInvokeLocal && Runner != null ? Runner.LocalPlayer : info.Source;
+
+        #endregion
 
         [Rpc(RpcSources.All, RpcTargets.StateAuthority)]
         void RPC_Damage(float damage, bool isHeadshot)
@@ -395,6 +546,31 @@ namespace CollarCali
             return byKey;
         }
 
+        /// <summary>
+        /// The actor standing in for exactly this object, never one of a parent's as FindFor allows -
+        /// a prop resting on a platform must not be mistaken for the platform. Binds it by key when
+        /// it has not found its object yet.
+        /// </summary>
+        public static NetworkWorldActor FindExact(GameObject go)
+        {
+            if (go == null)
+                return null;
+
+            if (_bySource.TryGetValue(go, out var cached) && IsLive(cached))
+                return cached;
+
+            int key = MakeKey(go.transform);
+            foreach (var actor in FindObjectsByType<NetworkWorldActor>(FindObjectsSortMode.None))
+            {
+                if (!IsLive(actor) || actor.SceneKey != key)
+                    continue;
+                actor.SetSource(go);
+                return actor;
+            }
+
+            return null;
+        }
+
         static bool IsLive(NetworkWorldActor actor)
         {
             return actor != null && actor.Object != null && actor.Object.IsValid;
@@ -472,6 +648,9 @@ namespace CollarCali
 
             foreach (var magician in FindObjectsByType<MagicianEnemy>(FindObjectsInactive.Include, FindObjectsSortMode.None))
                 CacheSource(magician);
+
+            foreach (var prop in FindObjectsByType<TelekineticProp>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+                CacheSource(prop);
         }
 
         static void CacheSource(Component c)
@@ -589,18 +768,27 @@ namespace CollarCali
             foreach (var transformer in FindObjectsByType<MSimpleTransformer>(FindObjectsInactive.Include, FindObjectsSortMode.None))
             {
                 if (transformer == null || IsCharacterObject(transformer.gameObject) ||
-                    IsZombieObject(transformer.gameObject))
+                    IsZombieObject(transformer.gameObject) || IsPropObject(transformer.gameObject))
                     continue;
                 AddMotionSource(into, seen, transformer.gameObject);
             }
 
             foreach (var anim in FindObjectsByType<Animator>(FindObjectsInactive.Include, FindObjectsSortMode.None))
             {
-                if (anim == null || IsCharacterAnimator(anim) || IsZombieObject(anim.gameObject))
+                if (anim == null || IsCharacterAnimator(anim) || IsZombieObject(anim.gameObject) ||
+                    IsPropObject(anim.gameObject))
                     continue;
                 AddMotionSource(into, seen, MotionRoot(anim.gameObject));
             }
         }
+
+        /// <summary>
+        /// A telekinetic prop has an actor of its own and moves itself. A model brought in with an
+        /// Animator - most imported meshes have one - must not also pick up a Trap actor that would
+        /// pin it to the host's copy every frame and fight the telekinesis.
+        /// </summary>
+        static bool IsPropObject(GameObject go) =>
+            go != null && go.GetComponentInParent<TelekineticProp>(true) != null;
 
         public static NetworkWorldKind ClassifyMotion(GameObject source)
         {

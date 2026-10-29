@@ -111,7 +111,7 @@ namespace CollarCali
             if (prefab == null)
                 return;
 
-            int enemies = 0, creeps = 0, platforms = 0, traps = 0, zombies = 0, magicians = 0;
+            int enemies = 0, creeps = 0, platforms = 0, traps = 0, zombies = 0, magicians = 0, props = 0;
 
             foreach (var ai in Object.FindObjectsByType<EmeraldAI.EmeraldSystem>(FindObjectsSortMode.None))
             {
@@ -159,6 +159,29 @@ namespace CollarCali
                     platforms++;
             }
 
+            // Two props at the same hierarchy path would share one actor and move as one, so the
+            // second is reported rather than silently bound to the first one's state.
+            var propKeys = new System.Collections.Generic.Dictionary<int, TelekineticProp>();
+            foreach (var prop in Object.FindObjectsByType<TelekineticProp>(FindObjectsSortMode.None))
+            {
+                if (prop == null)
+                    continue;
+
+                int key = NetworkWorldActor.MakeKey(prop.transform);
+                if (propKeys.TryGetValue(key, out var first))
+                {
+                    Debug.LogError("[CollarCali] Telekinetic props '" + NetworkWorldActor.MakePath(prop.transform) +
+                                   "' and '" + NetworkWorldActor.MakePath(first.transform) + "' have the same " +
+                                   "name under the same parent, so the network cannot tell them apart. Rename one.",
+                        prop);
+                    continue;
+                }
+
+                propKeys[key] = prop;
+                if (SpawnActor(runner, prefab, prop.gameObject, NetworkWorldKind.Prop))
+                    props++;
+            }
+
             // #region agent log
             AgentDebugLog.Write("B3", "MultiplayerSessionBootstrap.SpawnWorldActors", "actors_spawned",
                 "{\"enemies\":" + enemies +
@@ -166,8 +189,32 @@ namespace CollarCali
                 ",\"zombies\":" + zombies +
                 ",\"magicians\":" + magicians +
                 ",\"platforms\":" + platforms +
-                ",\"traps\":" + traps + "}");
+                ",\"traps\":" + traps +
+                ",\"props\":" + props + "}");
             // #endregion
+        }
+
+        /// <summary>
+        /// The actor for a telekinetic prop that missed the startup sweep - inactive when the session
+        /// started, or in a level that is not the Game scene. Master only, and a no-op once it has one.
+        /// </summary>
+        public static NetworkWorldActor EnsurePropActor(GameObject source)
+        {
+            if (source == null)
+                return null;
+
+            var existing = NetworkWorldActor.FindExact(source);
+            if (existing != null)
+                return existing;
+
+            MultiplayerPrefabs.EnsureLoaded();
+            var prefab = MultiplayerPrefabs.WorldActor;
+            var runner = NetworkCombatHooks.FindRunner();
+            if (prefab == null || runner == null || !runner.IsRunning || !runner.IsSharedModeMasterClient)
+                return null;
+
+            SpawnActor(runner, prefab, source, NetworkWorldKind.Prop);
+            return NetworkWorldActor.FindExact(source);
         }
 
         /// <summary>
