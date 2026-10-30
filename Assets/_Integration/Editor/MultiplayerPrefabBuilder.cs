@@ -10,12 +10,25 @@ using UnityEngine.SceneManagement;
 
 namespace CollarCali.Editor
 {
+    /// <summary>
+    /// Makes sure the TeamLink and NetworkWorldActor network prefabs exist - in Prefabs, and as the
+    /// Resources copies the game loads - and carry the FusionPrefab label.
+    ///
+    /// Runs after every domain reload: opening the project and every script change. So when everything
+    /// is already in place, which is nearly always, it does nothing. It used to save all assets,
+    /// force-reimport the Fusion config and rebuild Fusion's prefab table every time regardless, and
+    /// that rebuild loads every prefab in the project - the long "Hold on" on opening the project.
+    /// Fusion's own NetworkObjectPostprocessor labels and registers a network prefab whenever one is
+    /// imported anyway; the full rebuild is kept for when this really had to make or fix something,
+    /// and for the menu item.
+    /// </summary>
     public static class MultiplayerPrefabBuilder
     {
         const string OutputDir = "Assets/_Integration/Prefabs";
         const string ResourcesDir = "Assets/_Integration/Resources";
         const string TeamLinkPath = OutputDir + "/TeamLink.prefab";
         const string WorldActorPath = OutputDir + "/NetworkWorldActor.prefab";
+        const string FusionPrefabLabel = "FusionPrefab";
 
         [InitializeOnLoadMethod]
         static void AutoBuild()
@@ -41,7 +54,10 @@ namespace CollarCali.Editor
             if (!Directory.Exists(ResourcesDir))
                 Directory.CreateDirectory(ResourcesDir);
 
-            EnsureNetworkPrefab(
+            // |= rather than ||, so every step still runs after an earlier one has reported a change.
+            bool changed = force;
+
+            changed |= EnsureNetworkPrefab(
                 TeamLinkPath,
                 "TeamLink",
                 force,
@@ -51,7 +67,7 @@ namespace CollarCali.Editor
                         go.AddComponent<TeamDistanceManager>();
                 });
 
-            EnsureNetworkPrefab(
+            changed |= EnsureNetworkPrefab(
                 WorldActorPath,
                 "NetworkWorldActor",
                 force,
@@ -63,8 +79,12 @@ namespace CollarCali.Editor
                         go.AddComponent<NetworkWorldActor>();
                 });
 
-            CopyToResources(TeamLinkPath, ResourcesDir + "/TeamLink.prefab");
-            CopyToResources(WorldActorPath, ResourcesDir + "/NetworkWorldActor.prefab");
+            changed |= CopyToResources(TeamLinkPath, ResourcesDir + "/TeamLink.prefab");
+            changed |= CopyToResources(WorldActorPath, ResourcesDir + "/NetworkWorldActor.prefab");
+
+            // Everything was already in place: nothing to save, reimport or rebuild.
+            if (!changed)
+                return;
 
             AssetDatabase.SaveAssets();
             AssetDatabase.ImportAsset(
@@ -73,7 +93,8 @@ namespace CollarCali.Editor
             NetworkProjectConfigUtilities.RebuildPrefabTable();
         }
 
-        static void EnsureNetworkPrefab(string path, string name, bool force, System.Action<GameObject> setup)
+        /// <summary>True when the prefab had to be built again, or its label added.</summary>
+        static bool EnsureNetworkPrefab(string path, string name, bool force, System.Action<GameObject> setup)
         {
             if (!force)
             {
@@ -85,10 +106,7 @@ namespace CollarCali.Editor
                                             (existing.GetComponent<NetworkTransform>() != null &&
                                              existing.GetComponent<NetworkWorldActor>() != null));
                     if (complete)
-                    {
-                        AssetDatabase.SetLabels(existing, new[] { "FusionPrefab" });
-                        return;
-                    }
+                        return EnsureFusionLabel(existing);
                 }
             }
 
@@ -103,26 +121,33 @@ namespace CollarCali.Editor
 
             var saved = AssetDatabase.LoadAssetAtPath<GameObject>(path);
             if (saved != null && saved.GetComponent<NetworkObject>() != null)
-                AssetDatabase.SetLabels(saved, new[] { "FusionPrefab" });
+                EnsureFusionLabel(saved);
+            return true;
         }
 
-        static void CopyToResources(string src, string dst)
+        /// <summary>True when the Resources copy had to be made, or its label added.</summary>
+        static bool CopyToResources(string src, string dst)
         {
             if (AssetDatabase.LoadAssetAtPath<GameObject>(src) == null)
-                return;
-            if (AssetDatabase.LoadAssetAtPath<GameObject>(dst) != null)
-            {
-                var copy = AssetDatabase.LoadAssetAtPath<GameObject>(dst);
-                if (copy != null && copy.GetComponent<NetworkObject>() != null)
-                    AssetDatabase.SetLabels(copy, new[] { "FusionPrefab" });
-                return;
-            }
+                return false;
+
+            var copy = AssetDatabase.LoadAssetAtPath<GameObject>(dst);
+            if (copy != null)
+                return copy.GetComponent<NetworkObject>() != null && EnsureFusionLabel(copy);
 
             AssetDatabase.CopyAsset(src, dst);
             var saved = AssetDatabase.LoadAssetAtPath<GameObject>(dst);
             if (saved != null && saved.GetComponent<NetworkObject>() != null)
-                AssetDatabase.SetLabels(saved, new[] { "FusionPrefab" });
+                EnsureFusionLabel(saved);
+            return true;
         }
+
+        /// <summary>
+        /// Adds the FusionPrefab label when it is missing, keeping any other labels, and reports whether
+        /// it did. It used to be written unconditionally, replacing all of the asset's labels each time.
+        /// </summary>
+        static bool EnsureFusionLabel(UnityEngine.Object asset) =>
+            AssetDatabaseUtils.SetLabel(asset, FusionPrefabLabel, true);
     }
 }
 #endif

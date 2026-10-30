@@ -4,8 +4,8 @@ using UnityEngine;
 namespace CollarCali
 {
     /// <summary>
-    /// Every number the unified player systems are tuned by - camera transitions, death and
-    /// spectating, telekinetic carrying, throwing and catching - in one asset.
+    /// Every number the unified player systems are tuned by - camera transitions, the third-person
+    /// jump, death and spectating, telekinetic carrying, throwing and catching - in one asset.
     ///
     /// Lives at Resources/PlayerTuning so every player loads the same values without a prefab
     /// reference. Values are read live, so the asset can be edited during Play Mode and the next
@@ -57,6 +57,48 @@ namespace CollarCali
 
             [Tooltip("How far the aim view can look up (x, negative) and down (y), in degrees.")]
             public Vector2 aimViewPitchLimits = new Vector2(-80f, 80f);
+        }
+
+        [System.Serializable]
+        public class ThirdPersonJumpSettings
+        {
+            [Header("Arc")]
+            [Tooltip("How high a jump from the ground peaks, in metres. Standing, walking and running " +
+                     "jumps all follow the same arc, so a gap that can be cleared once always can.")]
+            [Range(0.5f, 5f)] public float jumpHeight = 2.5f;
+
+            [Tooltip("Seconds from leaving the ground to coming back down to the same height. Longer is " +
+                     "floatier, and - with the running speed - is what decides how far a jump carries.")]
+            [Range(0.3f, 2f)] public float airTime = 0.95f;
+
+            [Header("Double jump")]
+            [Tooltip("Jumps before landing again. 2 is a double jump; 1 turns it off.")]
+            [Range(1, 3)] public int jumps = 2;
+
+            [Tooltip("How much higher the double jump takes you, in metres, from wherever it is used.")]
+            [Range(0.5f, 5f)] public float doubleJumpHeight = 2.5f;
+
+            [Tooltip("Air time of the double jump, as for Air Time.")]
+            [Range(0.3f, 2f)] public float doubleJumpAirTime = 1.15f;
+
+            [Tooltip("Seconds after a jump before the double jump can be used.")]
+            [Range(0f, 1f)] public float doubleJumpDelay = 0.25f;
+
+            [Header("Control")]
+            [Tooltip("How quickly the character turns towards the input while in the air. On Malbers' " +
+                     "scale: its stock jump used 15 and its fall 10.")]
+            [Range(1f, 60f)] public float airTurnSpeed = 30f;
+
+            [Tooltip("How quickly speed in the air follows the input. Higher is snappier, lower floatier.")]
+            [Range(1f, 30f)] public float airSmoothing = 10f;
+
+            [Tooltip("Leave the ground the moment jump is pressed, instead of a third of the way into " +
+                     "the jump animation.")]
+            public bool instantTakeoff = true;
+
+            [Tooltip("Seconds after running off an edge during which jump still works as a jump from " +
+                     "the ground, keeping the double jump for later.")]
+            [Range(0f, 0.3f)] public float coyoteTime = 0.1f;
         }
 
         [System.Serializable]
@@ -259,6 +301,7 @@ namespace CollarCali
         }
 
         public CameraSettings cameraTransition = new CameraSettings();
+        public ThirdPersonJumpSettings thirdPersonJump = new ThirdPersonJumpSettings();
         public DeathSettings death = new DeathSettings();
         public CarrySettings carry = new CarrySettings();
         public ThrowSettings throwing = new ThrowSettings();

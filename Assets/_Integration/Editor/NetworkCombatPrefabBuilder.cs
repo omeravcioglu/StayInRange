@@ -95,16 +95,20 @@ namespace CollarCali.Editor
             return saved != null ? saved.GetComponent<NetworkObject>() : null;
         }
 
+        /// <summary>
+        /// Makes sure the Game scene's manager carries a NetworkVfxRelay and a NetworkCombatBootstrap
+        /// pointing at the pickup prefab.
+        ///
+        /// The automatic check after a reload only runs with Game already open, so it works on that
+        /// scene as it is, and saves only when it actually changed something. It used to re-open the
+        /// whole scene from disk and save it after every reload while it was open - a long freeze after
+        /// every script change.
+        /// </summary>
         public static void EnsureVfxRelayOnGameManager(bool force = false)
         {
-            if (!File.Exists(GameScenePath))
+            var gamePath = GameScenePath;
+            if (!File.Exists(gamePath))
                 return;
-
-            if (!force)
-            {
-                // Cheap check: if scene YAML already mentions NetworkVfxRelay script guid after we know meta.
-                // Always open if forced; otherwise skip when play mode upcoming.
-            }
 
             for (int i = 0; i < EditorSceneManager.sceneCount; i++)
             {
@@ -112,37 +116,58 @@ namespace CollarCali.Editor
                     return;
             }
 
-            var scene = EditorSceneManager.OpenScene(GameScenePath, OpenSceneMode.Single);
-            var manager = Object.FindFirstObjectByType<AvocadoShark.InGame_Manager>();
+            var scene = SceneManager.GetActiveScene();
+            if (!scene.IsValid() || scene.path != gamePath)
+                scene = EditorSceneManager.OpenScene(gamePath, OpenSceneMode.Single);
+
+            AvocadoShark.InGame_Manager manager = null;
+            foreach (var root in scene.GetRootGameObjects())
+            {
+                manager = root.GetComponentInChildren<AvocadoShark.InGame_Manager>(true);
+                if (manager != null)
+                    break;
+            }
             if (manager == null)
                 return;
 
-            var relay = manager.GetComponent<NetworkVfxRelay>();
-            if (relay == null)
+            bool changed = false;
+
+            if (manager.GetComponent<NetworkVfxRelay>() == null)
             {
-                relay = manager.gameObject.AddComponent<NetworkVfxRelay>();
-                EditorSceneManager.MarkSceneDirty(scene);
-                EditorSceneManager.SaveScene(scene);
+                manager.gameObject.AddComponent<NetworkVfxRelay>();
+                changed = true;
                 Debug.Log("[CollarCali] Added NetworkVfxRelay to Game Manager.");
             }
 
             var bootstrap = manager.GetComponent<NetworkCombatBootstrap>();
             if (bootstrap == null)
+            {
                 bootstrap = manager.gameObject.AddComponent<NetworkCombatBootstrap>();
+                changed = true;
+            }
 
             var pickupPrefab = EnsurePickupPrefab();
             if (pickupPrefab != null)
             {
                 var so = new SerializedObject(bootstrap);
-                so.FindProperty("networkWeaponPickupPrefab").objectReferenceValue = pickupPrefab;
-                so.ApplyModifiedPropertiesWithoutUndo();
-                EditorSceneManager.MarkSceneDirty(scene);
-                EditorSceneManager.SaveScene(scene);
+                var slot = so.FindProperty("networkWeaponPickupPrefab");
+                if (slot != null && slot.objectReferenceValue != pickupPrefab)
+                {
+                    slot.objectReferenceValue = pickupPrefab;
+                    so.ApplyModifiedPropertiesWithoutUndo();
+                    changed = true;
+                }
             }
+
+            // Already set up, which is nearly always: nothing to save.
+            if (!changed && !force)
+                return;
 
             var netObj = manager.GetComponent<NetworkObject>();
             if (netObj != null)
                 EditorUtility.SetDirty(netObj);
+            EditorSceneManager.MarkSceneDirty(scene);
+            EditorSceneManager.SaveScene(scene);
             AssetDatabase.SaveAssets();
         }
     }

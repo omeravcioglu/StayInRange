@@ -42,9 +42,6 @@ namespace CollarCali
         // Camera transition timings live in Resources/PlayerTuning (Camera Transition), next to every
         // other player tuning value, so they can be adjusted in one place during playtests.
 
-        // How much to raise the Malbers jump so the taller Meshy characters clear obstacles like Steve did.
-        const float SteveJumpBoost = 1.3f;
-
         /// <summary>Height of the chest above Steve's feet: where third-person carrying and aiming start from.</summary>
         const float TpsChestHeight = 1.35f;
 
@@ -1345,31 +1342,14 @@ namespace CollarCali
 
         void CapSteveJumps()
         {
+            // The jump - its arc, the double jump, air control and take-off - is tuned and kept tuned by
+            // ThirdPersonJumpTuning from PlayerTuning > Third Person Jump.
+            if (animal != null && animal.GetComponent<ThirdPersonJumpTuning>() == null)
+                animal.gameObject.AddComponent<ThirdPersonJumpTuning>();
+
             if (_steveTuned || animal == null)
                 return;
             _steveTuned = true;
-
-            var jumpBasic = animal.State_Get<JumpBasic>();
-            if (jumpBasic != null)
-            {
-                // Double jump in third person, as Malbers had it. First person stays on a single
-                // jump (Cowsins maxJumps is 1) - the double jump is a third-person move only.
-                jumpBasic.Jumps.Value = 2;
-                // The Meshy characters are taller than Steve, so the stock jump reads as a low hop.
-                // Nudge each jump profile's apex + launch speed up a little. Malbers clones states per
-                // animal at runtime, so this touches only this player's instance and resets each play.
-                if (jumpBasic.profiles != null)
-                {
-                    for (int i = 0; i < jumpBasic.profiles.Count; i++)
-                    {
-                        var p = jumpBasic.profiles[i];
-                        if (p.Height != null)
-                            p.Height.Value *= SteveJumpBoost;
-                        p.VerticalSpeed *= SteveJumpBoost;
-                        jumpBasic.profiles[i] = p;
-                    }
-                }
-            }
 
             var stats = animal.GetComponent<Stats>() ?? steveRoot.GetComponentInChildren<Stats>(true);
             var stamina = stats != null ? stats.Stat_Get("Stamina") : null;
