@@ -33,15 +33,15 @@ namespace CollarCali
         Text _title;
         RectTransform _titleRect;
         Text _label;
-        FpsNetworkBridge _self;
-        FpsNetworkBridge _target;
+        PlayerNetworkBridge _self;
+        PlayerNetworkBridge _target;
         bool _active;
         float _beganAt;
 
-        readonly List<FpsNetworkBridge> _living = new List<FpsNetworkBridge>();
+        readonly List<PlayerNetworkBridge> _living = new List<PlayerNetworkBridge>();
 
         public bool IsActive => _active;
-        public FpsNetworkBridge Target => _target;
+        public PlayerNetworkBridge Target => _target;
 
         /// <summary>1-based place of the watched teammate among those standing ("WATCHING · 2 OF 3").</summary>
         public int TargetIndex => _target != null ? _living.IndexOf(_target) + 1 : 0;
@@ -73,7 +73,7 @@ namespace CollarCali
             SetActive(false);
         }
 
-        public void Begin(FpsNetworkBridge self)
+        public void Begin(PlayerNetworkBridge self)
         {
             _self = self;
             _active = true;
@@ -139,7 +139,7 @@ namespace CollarCali
 
             // Kept for the HUD's "WATCHING · n OF m"; the list is reused, not rebuilt.
             _living.Clear();
-            foreach (var bridge in FpsNetworkBridge.All)
+            foreach (var bridge in PlayerNetworkBridge.All)
             {
                 if (IsValidTarget(bridge))
                     _living.Add(bridge);
@@ -204,10 +204,10 @@ namespace CollarCali
             }
         }
 
-        List<FpsNetworkBridge> LivingTargets()
+        List<PlayerNetworkBridge> LivingTargets()
         {
-            var list = new List<FpsNetworkBridge>();
-            foreach (var bridge in FpsNetworkBridge.All)
+            var list = new List<PlayerNetworkBridge>();
+            foreach (var bridge in PlayerNetworkBridge.All)
             {
                 if (IsValidTarget(bridge))
                     list.Add(bridge);
@@ -219,7 +219,7 @@ namespace CollarCali
             return list;
         }
 
-        bool IsValidTarget(FpsNetworkBridge bridge)
+        bool IsValidTarget(PlayerNetworkBridge bridge)
         {
             return bridge != null
                    && bridge != _self

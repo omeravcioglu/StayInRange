@@ -6,7 +6,7 @@ namespace CollarCali
     /// <summary>
     /// Lets Cowsins hits damage Emerald AI and shows a number even if Emerald combat text is missing.
     /// </summary>
-    public class CowsinsHitsEmeraldHealth : MonoBehaviour, cowsins.IDamageable
+    public class CowsinsHitsEmeraldHealth : MonoBehaviour, cowsins.IDamageable, IDamageTarget
     {
         EmeraldHealth _health;
 

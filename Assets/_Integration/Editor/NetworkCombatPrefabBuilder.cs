@@ -18,7 +18,8 @@ namespace CollarCali.Editor
         /// <summary>Found by name, wherever the scenes folder is; null when there is no Game scene.</summary>
         static string GameScenePath => ProjectPaths.Scene("Game");
 
-        [InitializeOnLoadMethod]
+        // No longer runs on every editor load: it rebuilt the gun pickup from a Cowsins prefab and
+        // could save Game.unity, and guns are leaving the game. The menu item still runs it.
         static void AutoBuild()
         {
             EditorApplication.delayCall += () =>

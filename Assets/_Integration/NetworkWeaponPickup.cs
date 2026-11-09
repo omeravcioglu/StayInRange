@@ -125,10 +125,10 @@ namespace CollarCali
             if (!Object || !Object.IsValid || Claimed)
                 return false;
 
-            var bridge = player.GetComponentInParent<FpsNetworkBridge>()
-                         ?? player.GetComponent<FpsNetworkBridge>();
+            var bridge = player.GetComponentInParent<PlayerNetworkBridge>()
+                         ?? player.GetComponent<PlayerNetworkBridge>();
             if (bridge == null)
-                bridge = UnityEngine.Object.FindFirstObjectByType<FpsNetworkBridge>();
+                bridge = UnityEngine.Object.FindFirstObjectByType<PlayerNetworkBridge>();
 
             // 2D: this only runs on the machine that picked the weapon up, and it is feedback about
             // your own inventory rather than an event in the world.

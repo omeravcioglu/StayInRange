@@ -222,7 +222,7 @@ namespace CollarCali.UI
 
         static bool LocalPlayerReady()
         {
-            foreach (var bridge in FpsNetworkBridge.All)
+            foreach (var bridge in PlayerNetworkBridge.All)
             {
                 if (bridge != null && bridge.IsLocalOwner && bridge.DualPlayer != null &&
                     bridge.GetComponent<HudRoot>() != null)

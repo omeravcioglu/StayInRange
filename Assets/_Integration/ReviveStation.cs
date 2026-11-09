@@ -40,7 +40,7 @@ namespace CollarCali
 
         float _readyAt;
         float _nextScan;
-        FpsNetworkBridge _candidate;
+        PlayerNetworkBridge _candidate;
 
         // Every enabled station, so the carrier's per-frame check never scans the scene.
         static readonly List<ReviveStation> All = new List<ReviveStation>();
@@ -130,7 +130,7 @@ namespace CollarCali
         /// does the carrier's telekinesis, so a body still held in the air comes back without being
         /// put down first.
         /// </summary>
-        public bool TryRevive(FpsNetworkBridge body, Transform player)
+        public bool TryRevive(PlayerNetworkBridge body, Transform player)
         {
             if (body == null || !body.IsDead || Time.time < _readyAt)
                 return false;
@@ -153,7 +153,7 @@ namespace CollarCali
         /// The station a body can be revived at right now - the nearest one in range that is not
         /// cooling down - or null. Asked every frame by whoever is holding the body.
         /// </summary>
-        public static ReviveStation FindFor(FpsNetworkBridge body)
+        public static ReviveStation FindFor(PlayerNetworkBridge body)
         {
             if (body == null || !body.IsDead)
                 return null;
@@ -195,13 +195,13 @@ namespace CollarCali
         /// The nearest dead player whose body is here. A dead player's network root follows their
         /// ragdoll, so its position is the body's position - carried or lying on the floor.
         /// </summary>
-        FpsNetworkBridge FindBodyInRange()
+        PlayerNetworkBridge FindBodyInRange()
         {
-            FpsNetworkBridge best = null;
+            PlayerNetworkBridge best = null;
             float bestDistance = float.MaxValue;
             var here = transform.position;
 
-            foreach (var bridge in FindObjectsByType<FpsNetworkBridge>(FindObjectsSortMode.None))
+            foreach (var bridge in FindObjectsByType<PlayerNetworkBridge>(FindObjectsSortMode.None))
             {
                 if (bridge == null || !bridge.IsDead || bridge.Object == null || !bridge.Object.IsValid)
                     continue;

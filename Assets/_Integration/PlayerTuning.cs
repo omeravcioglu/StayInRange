@@ -5,7 +5,7 @@ namespace CollarCali
 {
     /// <summary>
     /// Every number the unified player systems are tuned by - camera transitions, the third-person
-    /// jump, death and spectating, telekinetic carrying, throwing and catching - in one asset.
+    /// jump, health, death and spectating, telekinetic carrying, throwing and catching - in one asset.
     ///
     /// Lives at Resources/PlayerTuning so every player loads the same values without a prefab
     /// reference. Values are read live, so the asset can be edited during Play Mode and the next
@@ -300,7 +300,41 @@ namespace CollarCali
             [Min(0.5f)] public float snapDistance = 4f;
         }
 
+        [System.Serializable]
+        public class VitalsSettings
+        {
+            [Tooltip("A player's health. Cowsins gave 100 health and a 50 shield that took damage " +
+                     "first; one pool of 150 keeps every enemy as deadly as it was.")]
+            [Min(1f)] public float maxHealth = 150f;
+
+            [Tooltip("Seconds after a revive or a respawn during which nothing can hurt the player, so " +
+                     "they are not killed again while getting up.")]
+            [Min(0f)] public float invulnerableAfterRevive = 2f;
+        }
+
+        [System.Serializable]
+        public class BodySettings
+        {
+            [Tooltip("Keep the walk, run, crouch and climb speeds the levels were built with. Malbers " +
+                     "moves the player by its animations, and a smaller body covers less ground per " +
+                     "step, so those animations play faster by the difference: quicker steps, same speed.")]
+            public bool keepLevelSpeed = true;
+
+            [Tooltip("The size of body the levels' speeds come from, as Unity measures a humanoid " +
+                     "(Animator.humanScale): 0.964 is the 2.48 m model the game used until November 2026.")]
+            [Min(0.1f)] public float levelBodyScale = 0.964f;
+
+            [Tooltip("A further speed-up of the same animations, on top (1 = none).")]
+            [Range(0.5f, 2f)] public float extraSpeed = 1f;
+
+            [Tooltip("The Malbers speed sets that move the body by its animations. Wall runs, swimming " +
+                     "and flying push the body directly and need no correction.")]
+            public string[] rootMotionSpeedSets =
+                { "Ground", "Crouch", "Heavy Weapons", "Balance", "Against Wall", "Climb", "Ladder" };
+        }
+
         public CameraSettings cameraTransition = new CameraSettings();
+        public BodySettings body = new BodySettings();
         public ThirdPersonJumpSettings thirdPersonJump = new ThirdPersonJumpSettings();
         public DeathSettings death = new DeathSettings();
         public CarrySettings carry = new CarrySettings();
@@ -309,6 +343,7 @@ namespace CollarCali
         public TetherSettings tether = new TetherSettings();
         public InputSettings input = new InputSettings();
         public NetworkSettings network = new NetworkSettings();
+        public VitalsSettings vitals = new VitalsSettings();
 
         static PlayerTuning _active;
 

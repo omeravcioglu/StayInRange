@@ -280,11 +280,11 @@ namespace CollarCali
 
         readonly struct Target
         {
-            readonly FpsNetworkBridge _bridge;
+            readonly PlayerNetworkBridge _bridge;
             readonly PlayerStats _stats;
             readonly Transform _root;
 
-            public Target(FpsNetworkBridge bridge, PlayerStats stats, Transform root)
+            public Target(PlayerNetworkBridge bridge, PlayerStats stats, Transform root)
             {
                 _bridge = bridge;
                 _stats = stats;
@@ -309,7 +309,7 @@ namespace CollarCali
             Target best = default;
             float bestDistance = float.MaxValue;
 
-            var bridges = FindObjectsByType<FpsNetworkBridge>(FindObjectsSortMode.None);
+            var bridges = FindObjectsByType<PlayerNetworkBridge>(FindObjectsSortMode.None);
             if (bridges != null && bridges.Length > 0)
             {
                 foreach (var bridge in bridges)

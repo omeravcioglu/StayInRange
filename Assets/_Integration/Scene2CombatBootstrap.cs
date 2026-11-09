@@ -152,7 +152,7 @@ namespace CollarCali
         public static GameObject FindExistingFpsPlayer()
         {
 #if CMPSETUP_COMPLETE
-            foreach (var bridge in Object.FindObjectsByType<FpsNetworkBridge>(FindObjectsSortMode.None))
+            foreach (var bridge in Object.FindObjectsByType<PlayerNetworkBridge>(FindObjectsSortMode.None))
             {
                 if (bridge == null || !bridge.IsLocalOwner)
                     continue;
@@ -613,7 +613,7 @@ namespace CollarCali
 #if CMPSETUP_COMPLETE
             // The local-owner wire above never sees a joining client. Every networked
             // player needs its own Player-layer faction target on this machine.
-            foreach (var bridge in FindObjectsByType<FpsNetworkBridge>(FindObjectsSortMode.None))
+            foreach (var bridge in FindObjectsByType<PlayerNetworkBridge>(FindObjectsSortMode.None))
             {
                 if (bridge == null || bridge.Object == null || !bridge.Object.IsValid)
                     continue;

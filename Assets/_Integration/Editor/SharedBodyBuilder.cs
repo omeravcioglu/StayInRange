@@ -16,7 +16,7 @@ namespace CollarCali.EditorTools
     /// moved to orange, blue, pink and lime - the rest of the paint (face, eyes, details) as it was -
     /// baked by the scratch tool shared_body.py. This builds a material for each and rewrites
     /// Resources/CharacterSkins.asset as those four, in PlayerColorPalette order, so a player's skin
-    /// is simply their colour index (FpsNetworkBridge.ApplyIdentity).
+    /// is simply their colour index (PlayerNetworkBridge.ApplyIdentity).
     ///
     /// Builds assets only - no prefab is touched; the skin is put on at runtime.
     /// </summary>

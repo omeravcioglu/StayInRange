@@ -147,7 +147,7 @@ namespace CollarCali
                 return;
 
 #if CMPSETUP_COMPLETE
-            var bridge = other.GetComponentInParent<FpsNetworkBridge>();
+            var bridge = other.GetComponentInParent<PlayerNetworkBridge>();
             if (bridge != null)
             {
                 if (!bridge.IsLocalOwner || bridge.IsDead)

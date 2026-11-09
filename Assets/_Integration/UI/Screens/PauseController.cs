@@ -11,7 +11,7 @@ namespace CollarCali.UI
     /// and LEAVE MATCH is the way back to the menu that the game never had.
     ///
     /// Created by HudRoot with the local player and gone with it. Cowsins' own pause menu stays
-    /// switched off (FpsNetworkBridge does that); this reads its own key, since Cowsins' pause action
+    /// switched off (PlayerNetworkBridge does that); this reads its own key, since Cowsins' pause action
     /// is off in third person and while dead.
     /// </summary>
     [DefaultExecutionOrder(1000)]
@@ -19,7 +19,7 @@ namespace CollarCali.UI
     {
         public static PauseController Instance { get; private set; }
 
-        FpsNetworkBridge _local;
+        PlayerNetworkBridge _local;
         Canvas _backCanvas;
         Canvas _frontCanvas;
         PauseMenuView _view;
@@ -32,7 +32,7 @@ namespace CollarCali.UI
 
         DualPlayerController _offline;
 
-        public static PauseController Create(FpsNetworkBridge local)
+        public static PauseController Create(PlayerNetworkBridge local)
         {
             var go = new GameObject("PauseMenu");
             var controller = go.AddComponent<PauseController>();

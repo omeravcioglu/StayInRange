@@ -250,7 +250,7 @@ namespace CollarCali
             if (go == null)
                 return false;
 #if CMPSETUP_COMPLETE
-            if (go.GetComponentInParent<FpsNetworkBridge>() != null)
+            if (go.GetComponentInParent<PlayerNetworkBridge>() != null)
                 return true;
 #endif
 

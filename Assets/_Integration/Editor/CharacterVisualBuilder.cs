@@ -20,17 +20,21 @@ namespace CollarCali.EditorTools
     /// Everything that touches assets happens here in the editor with full Undo/import handling, so
     /// the risky rig + prefab work is verifiable in Unity rather than edited blind.
     ///
+    /// Every copy of the model is a nested prefab instance (the lobby preview a variant of the model),
+    /// never an unpacked copy, so a re-import of the model - such as the avatar fix's scale (Tools ▸
+    /// CollarCali ▸ Character ▸ Fix Avatar &amp; Scale, run that first) - reaches all of them.
+    ///
     /// NOW POINTED AT "omerfeozs - 3D Low Poly", which replaced the four Meshy characters. That model
     /// is a single mesh with a single material of its own, rather than one mesh with four skin
     /// variants, so the skin library is built from the model's own material and players are told apart
-    /// by the per-player colour tint that FpsNetworkBridge already applies. The old Meshy model and
+    /// by the per-player colour tint that PlayerNetworkBridge already applies. The old Meshy model and
     /// the Character 1-4 prefabs are left on disk, unreferenced, so this is reversible by putting the
     /// old guid back.
     ///
     /// NOTE (2026-09-27): the game currently wears the Meshy body as ONE shared body in the four
     /// player colours - Tools ▸ CollarCali ▸ Build Shared Body writes the skin library for that.
     /// Running this builder replaces that library with a single skin and swaps the body models;
-    /// FpsNetworkBridge.ApplyIdentity then falls back to painting skin 0 with the player colour.
+    /// PlayerNetworkBridge.ApplyIdentity then falls back to painting skin 0 with the player colour.
     /// </summary>
     public static class CharacterVisualBuilder
     {
@@ -182,7 +186,7 @@ namespace CollarCali.EditorTools
             };
 
             // One character now, with its own material, so the library holds a single skin. Players
-            // are still told apart: FpsNetworkBridge tints each body by its networked colour index.
+            // are still told apart: PlayerNetworkBridge tints each body by its networked colour index.
             //
             // This runs before the legacy scan below and returns early, so the old four skins are
             // only consulted if this material has gone missing.
@@ -255,11 +259,12 @@ namespace CollarCali.EditorTools
             if (fbx == null)
                 return;
 
+            // A variant of the model rather than an unpacked copy: an unpacked copy keeps the bone
+            // lengths of the import it was made from, so a later re-import (the avatar fix's scale)
+            // pulled it apart. A variant follows every re-import.
             var instance = (GameObject)PrefabUtility.InstantiatePrefab(fbx);
             try
             {
-                PrefabUtility.UnpackPrefabInstance(instance, PrefabUnpackMode.Completely,
-                    InteractionMode.AutomatedAction);
                 instance.name = "CharacterPreview";
                 instance.transform.position = Vector3.zero;
                 instance.transform.rotation = Quaternion.identity;
@@ -280,7 +285,7 @@ namespace CollarCali.EditorTools
                     ApplySkinMaterial(instance, skins.Get(0).material);
 
                 PrefabUtility.SaveAsPrefabAsset(instance, PreviewPrefabPath);
-                log.AppendLine("  Wrote " + PreviewPrefabPath);
+                log.AppendLine("  Wrote " + PreviewPrefabPath + " (a variant of the model)");
             }
             finally
             {
@@ -307,13 +312,10 @@ namespace CollarCali.EditorTools
                 for (int i = playerRender.childCount - 1; i >= 0; i--)
                     Object.DestroyImmediate(playerRender.GetChild(i).gameObject);
 
+                // The model's origin is the ground between its feet (the avatar fix puts the soles on
+                // it), so the body sits at the root's feet as it is. The old lift measured skinned-mesh
+                // bounds, which are inflated, and floated the body 0.28 m.
                 var visual = InstantiateCharacterVisual(fbxPath, playerRender, skins, avatar);
-
-                // The imported pivot is not at the soles, so parenting at the root's feet buries the body
-                // to the waist (only the jump lifted it into view). Drop the visual so its lowest point
-                // sits exactly on the root origin - i.e. the player's feet.
-                float lift = AlignBottomToParentY(visual, playerRender);
-                log.AppendLine("  Remote body foot-aligned (lifted " + lift.ToString("0.###") + "m).");
 
                 // The root Animator drives the body via humanoid retargeting, so it must point at the
                 // character avatar for the new bones to be found.
@@ -347,6 +349,15 @@ namespace CollarCali.EditorTools
                 {
                     log.AppendLine("  ! Steve has no Animator - skipped.");
                     return;
+                }
+
+                // The previous build's copy goes first, so running this again replaces it rather than
+                // stacking a second body.
+                for (int i = anim.transform.childCount - 1; i >= 0; i--)
+                {
+                    var child = anim.transform.GetChild(i);
+                    if (child.name == "CharacterVisual")
+                        Object.DestroyImmediate(child.gameObject);
                 }
 
                 // Additive-and-hide (rather than delete) so Malbers' component/bone references on the
@@ -403,16 +414,15 @@ namespace CollarCali.EditorTools
         // ---- shared helpers ---------------------------------------------------------------------
 
         /// <summary>
-        /// Instantiates the character model, strips its own Animator (so only the parent rig drives it),
-        /// zeroes its local transform, matches the parent's layer and optionally applies a skin.
+        /// Nests the character model (a prefab instance, not an unpacked copy, so it follows every
+        /// re-import of the model), strips its own Animator so only the parent rig drives it, zeroes
+        /// its local transform and optionally applies a skin.
         /// </summary>
         static GameObject InstantiateCharacterVisual(string fbxPath, Transform parent,
             CharacterSkinLibrary skins, Avatar avatar)
         {
             var fbx = AssetDatabase.LoadAssetAtPath<GameObject>(fbxPath);
             var visual = (GameObject)PrefabUtility.InstantiatePrefab(fbx, parent);
-            PrefabUtility.UnpackPrefabInstance(visual, PrefabUnpackMode.Completely,
-                InteractionMode.AutomatedAction);
 
             visual.transform.SetParent(parent, false);
             visual.transform.localPosition = Vector3.zero;
@@ -431,42 +441,6 @@ namespace CollarCali.EditorTools
                 ApplySkinMaterial(visual, skins.Get(0).material);
 
             return visual;
-        }
-
-        /// <summary>
-        /// Shifts <paramref name="visual"/> vertically so the bottom of its combined renderer bounds
-        /// rests on the parent's origin height. Returns the lift applied (metres). No-op if the bounds
-        /// come back empty.
-        /// </summary>
-        static float AlignBottomToParentY(GameObject visual, Transform parent)
-        {
-            var renderers = visual.GetComponentsInChildren<Renderer>(true);
-            if (renderers.Length == 0)
-                return 0f;
-
-            bool has = false;
-            Bounds bounds = default;
-            foreach (var r in renderers)
-            {
-                if (r == null || r is TrailRenderer || r is LineRenderer)
-                    continue;
-                if (!has)
-                {
-                    bounds = r.bounds;
-                    has = true;
-                }
-                else
-                {
-                    bounds.Encapsulate(r.bounds);
-                }
-            }
-
-            if (!has || bounds.size.y <= 0.0001f)
-                return 0f;
-
-            float delta = parent.position.y - bounds.min.y;
-            visual.transform.position += new Vector3(0f, delta, 0f);
-            return delta;
         }
 
         static void ApplySkinMaterial(GameObject root, Material material)

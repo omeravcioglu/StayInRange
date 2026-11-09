@@ -175,7 +175,7 @@ namespace CollarCali
 #if CMPSETUP_COMPLETE
             var bridge = dual.NetworkBridge != null
                 ? dual.NetworkBridge
-                : dual.GetComponent<FpsNetworkBridge>();
+                : dual.GetComponent<PlayerNetworkBridge>();
             if (bridge == null)
                 return true;
 

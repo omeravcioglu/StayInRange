@@ -15,17 +15,17 @@ namespace CollarCali
         public static NetworkObject TeamLinkPrefab;
         public static NetworkObject WorldActorPrefab;
 
-        public static FpsNetworkBridge FindLocalBridge()
+        public static PlayerNetworkBridge FindLocalBridge()
         {
             // FusionConnection exists in the Menu before any runner does, and its lookup dereferences
             // the runner unchecked - which threw on every frame the world markers asked.
             var connection = FusionConnection.Instance;
             if (connection != null && connection.Runner != null && connection.Runner.IsRunning &&
-                connection.TryGetLocalPlayerComponent(out FpsNetworkBridge bridge))
+                connection.TryGetLocalPlayerComponent(out PlayerNetworkBridge bridge))
                 return bridge;
 
             // The registry rather than a scene search: the markers ask every frame.
-            foreach (var b in FpsNetworkBridge.All)
+            foreach (var b in PlayerNetworkBridge.All)
             {
                 if (b != null && b.IsLocalOwner)
                     return b;

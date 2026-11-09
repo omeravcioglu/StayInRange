@@ -14,11 +14,11 @@ namespace CollarCali
     [RequireComponent(typeof(FactionExtension))]
     public class NetworkedPlayerAiTarget : MonoBehaviour, IDamageable, ICombat
     {
-        FpsNetworkBridge _bridge;
+        PlayerNetworkBridge _bridge;
         TargetPositionModifier _tpm;
         readonly List<string> _activeEffects = new();
 
-        public FpsNetworkBridge Bridge => _bridge;
+        public PlayerNetworkBridge Bridge => _bridge;
 
         public int Health
         {
@@ -50,7 +50,7 @@ namespace CollarCali
         bool HasLiveBridge =>
             _bridge != null && _bridge.Object != null && _bridge.Object.IsValid;
 
-        public void Initialize(FpsNetworkBridge bridge)
+        public void Initialize(PlayerNetworkBridge bridge)
         {
             _bridge = bridge;
             _tpm = GetComponent<TargetPositionModifier>();
@@ -59,7 +59,7 @@ namespace CollarCali
         void Awake()
         {
             if (_bridge == null)
-                _bridge = GetComponentInParent<FpsNetworkBridge>();
+                _bridge = GetComponentInParent<PlayerNetworkBridge>();
             _tpm = GetComponent<TargetPositionModifier>();
         }
 

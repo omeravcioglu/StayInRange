@@ -54,7 +54,7 @@ namespace CollarCali
             var players = new List<PlayerView>();
 
 #if CMPSETUP_COMPLETE
-            var bridges = Object.FindObjectsByType<FpsNetworkBridge>(FindObjectsSortMode.None);
+            var bridges = Object.FindObjectsByType<PlayerNetworkBridge>(FindObjectsSortMode.None);
             if (bridges != null && bridges.Length > 0)
             {
                 foreach (var bridge in bridges)

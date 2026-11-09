@@ -8,7 +8,7 @@ namespace CollarCali
     /// Everything that is true about a player's body while they are dead: a synchronised ragdoll
     /// that teammates can lift, throw and catch, and a spectator camera for the player it belongs to.
     ///
-    /// Runs on every machine. FpsNetworkBridge owns the networked facts (who holds the body, who
+    /// Runs on every machine. PlayerNetworkBridge owns the networked facts (who holds the body, who
     /// simulates it, what phase it is in); this component is what those facts look like in the
     /// physics scene.
     ///
@@ -53,7 +53,7 @@ namespace CollarCali
 
         ITelekineticTarget ITelekineticSimulation.Target => _bridge;
 
-        FpsNetworkBridge _bridge;
+        PlayerNetworkBridge _bridge;
         PlayerRagdoll _ragdoll;
         SpectatorController _spectator;
 
@@ -93,13 +93,13 @@ namespace CollarCali
         public bool IsDown => _down;
         public bool CanRagdoll => _canRagdoll;
         public PlayerRagdoll Ragdoll => _ragdoll;
-        public FpsNetworkBridge Bridge => _bridge;
+        public PlayerNetworkBridge Bridge => _bridge;
         public bool IsSimulatedHere => _down && _simulatingHere;
 
         /// <summary>Where the body is on this machine - its hips, which is also where its collar is measured.</summary>
         public Vector3 BodyPosition => _ragdoll != null ? _ragdoll.BodyPosition : transform.position;
 
-        public void Bind(FpsNetworkBridge bridge, Transform body)
+        public void Bind(PlayerNetworkBridge bridge, Transform body)
         {
             _bridge = bridge;
             _ragdoll = GetComponent<PlayerRagdoll>();
@@ -284,7 +284,7 @@ namespace CollarCali
             if (_bridge.Object == null || !_bridge.Object.IsValid)
                 return false;
 
-            var simulator = FpsNetworkBridge.FindByPlayer(_bridge.BodySimulator);
+            var simulator = PlayerNetworkBridge.FindByPlayer(_bridge.BodySimulator);
             if (simulator == null || simulator.Object == null || !simulator.Object.IsValid)
                 return false;
             if (simulator.DrivenBody != _bridge.Object.Id)
@@ -491,7 +491,7 @@ namespace CollarCali
                 return;
 
             var correction = Vector3.zero;
-            foreach (var other in FpsNetworkBridge.All)
+            foreach (var other in PlayerNetworkBridge.All)
             {
                 if (other == null || other == _bridge || other.Object == null || !other.Object.IsValid)
                     continue;

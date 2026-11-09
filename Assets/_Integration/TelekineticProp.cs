@@ -25,7 +25,7 @@ namespace CollarCali
     ///     succeed;
     ///   - whoever is HANDLING it simulates it: the carrier while it is held, the thrower while it
     ///     flies, the host while it lies loose. The handler publishes its pose through their own player
-    ///     bridge (FpsNetworkBridge.Driven*), the host through the actor's transform, and every other
+    ///     bridge (PlayerNetworkBridge.Driven*), the host through the actor's transform, and every other
     ///     machine follows the published pose kinematically.
     ///
     /// PLACING. With "Freeze When Placed" (on by default) letting go with the interact key puts it down
@@ -704,7 +704,7 @@ namespace CollarCali
             var driver = _actor.PropDriver;
             if (driver != PlayerRef.None)
             {
-                var bridge = FpsNetworkBridge.FindByPlayer(driver);
+                var bridge = PlayerNetworkBridge.FindByPlayer(driver);
                 if (bridge != null && bridge.DrivenBody == _actor.Object.Id)
                 {
                     position = bridge.DrivenHipsPosition;

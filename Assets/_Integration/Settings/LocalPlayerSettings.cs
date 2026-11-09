@@ -27,7 +27,7 @@ namespace CollarCali
         static readonly MethodInfo GatherSensitivity = typeof(CameraLookBehaviour).GetMethod(
             "GatherSensitivityValues", BindingFlags.Instance | BindingFlags.NonPublic);
 
-        FpsNetworkBridge _bridge;
+        PlayerNetworkBridge _bridge;
         PlayerMovement _movement;
         PlayerInput _steveInput;
         ThirdPersonFollowTarget[] _cameras = new ThirdPersonFollowTarget[0];
@@ -45,7 +45,7 @@ namespace CollarCali
         {
             // Networked, the controller sits on the bridge's object; offline (Game.unity played on
             // its own) there is no bridge and it sits on PlayerMain.
-            _bridge = GetComponent<FpsNetworkBridge>();
+            _bridge = GetComponent<PlayerNetworkBridge>();
             _dual = GetComponent<DualPlayerController>();
         }
 

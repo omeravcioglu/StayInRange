@@ -356,7 +356,7 @@ namespace CollarCali
 
         // Uses the replicated anchor rather than each player's local gameplay transform so the rule
         // measures the same points the clients' HUDs do.
-        static bool AnyPairTooFar(List<FpsNetworkBridge> players, float max)
+        static bool AnyPairTooFar(List<PlayerNetworkBridge> players, float max)
         {
             for (int i = 0; i < players.Count; i++)
             {
@@ -501,12 +501,12 @@ namespace CollarCali
         /// dead player cannot stand on a save pad, and counting them there would mean no checkpoint
         /// could ever complete while somebody was down.
         /// </summary>
-        static List<FpsNetworkBridge> ListCollarPlayers()
+        static List<PlayerNetworkBridge> ListCollarPlayers()
         {
             return ListConnectedPlayers();
         }
 
-        static List<FpsNetworkBridge> ListAlivePlayers()
+        static List<PlayerNetworkBridge> ListAlivePlayers()
         {
             var list = ListConnectedPlayers();
             for (int i = list.Count - 1; i >= 0; i--)
@@ -518,10 +518,10 @@ namespace CollarCali
             return list;
         }
 
-        static List<FpsNetworkBridge> ListConnectedPlayers()
+        static List<PlayerNetworkBridge> ListConnectedPlayers()
         {
-            var list = new List<FpsNetworkBridge>();
-            foreach (var bridge in FindObjectsByType<FpsNetworkBridge>(FindObjectsSortMode.None))
+            var list = new List<PlayerNetworkBridge>();
+            foreach (var bridge in FindObjectsByType<PlayerNetworkBridge>(FindObjectsSortMode.None))
             {
                 if (bridge == null || bridge.Object == null || !bridge.Object.IsValid)
                     continue;

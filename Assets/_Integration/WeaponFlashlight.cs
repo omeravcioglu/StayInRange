@@ -81,7 +81,7 @@ namespace CollarCali
         void LateUpdate()
         {
 #if CMPSETUP_COMPLETE
-            var bridge = GetComponent<FpsNetworkBridge>();
+            var bridge = GetComponent<PlayerNetworkBridge>();
             if (bridge != null && bridge.Object != null && !bridge.IsLocalOwner)
                 return;
 #endif

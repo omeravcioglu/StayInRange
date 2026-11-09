@@ -541,7 +541,7 @@ namespace CollarCali
             var others = new List<GrabVictim>();
             GrabVictim last = null;
 
-            var bridges = FindObjectsByType<FpsNetworkBridge>(FindObjectsSortMode.None);
+            var bridges = FindObjectsByType<PlayerNetworkBridge>(FindObjectsSortMode.None);
             if (bridges != null && bridges.Length > 0)
             {
                 foreach (var bridge in bridges)
@@ -951,7 +951,7 @@ namespace CollarCali
         sealed class GrabVictim
         {
             public Transform Root;
-            public FpsNetworkBridge Bridge;
+            public PlayerNetworkBridge Bridge;
             PlayerControl _control;
             Rigidbody _rb;
             PlayerStats _stats;
@@ -987,7 +987,7 @@ namespace CollarCali
                 };
             }
 
-            public static GrabVictim FromBridge(FpsNetworkBridge bridge)
+            public static GrabVictim FromBridge(PlayerNetworkBridge bridge)
             {
                 Transform root = bridge.transform;
                 if (bridge.DualPlayer != null && bridge.DualPlayer.IsThirdPerson && bridge.DualPlayer.SteveRoot != null)
@@ -1108,7 +1108,7 @@ namespace CollarCali
             if (other == null)
                 return false;
 
-            var bridge = other.GetComponentInParent<FpsNetworkBridge>();
+            var bridge = other.GetComponentInParent<PlayerNetworkBridge>();
             if (bridge != null && bridge.Object != null && bridge.Object.IsValid && !bridge.IsDead)
                 return true;
 

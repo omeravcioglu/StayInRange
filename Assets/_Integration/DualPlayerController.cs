@@ -12,8 +12,10 @@ namespace CollarCali
     /// <summary>
     /// Local dual-controller player: Cowsins FPS + Malbers Steve on one prefab.
     /// Children are spawned from prefab refs at runtime if not already nested.
+    /// Registers as the local IPlayerRig while enabled, until the third-person-only controller
+    /// replaces it.
     /// </summary>
-    public class DualPlayerController : MonoBehaviour
+    public class DualPlayerController : MonoBehaviour, IPlayerRig
     {
         [Header("FPS Engine")]
         [SerializeField] GameObject fpsRoot;
@@ -146,13 +148,14 @@ namespace CollarCali
         /// <summary>True while the third-person view is in the character's eyes for aiming a throw.</summary>
         public bool IsAimViewLive => _aimEyeLive;
 
-        FpsNetworkBridge _networkBridge;
+        PlayerNetworkBridge _networkBridge;
         bool _networkMode;
         System.Action<bool> _onModeChanged;
 
         public Transform FpsBody => fpsBody;
         public GameObject SteveRoot => steveRoot;
-        public FpsNetworkBridge NetworkBridge => _networkBridge;
+        GameObject IPlayerRig.Body => steveRoot;
+        public PlayerNetworkBridge NetworkBridge => _networkBridge;
         public bool IsNetworkMode => _networkMode;
 
         public void SetSourcePrefabs(GameObject cowsins, GameObject steve, GameObject cameras)
@@ -183,7 +186,7 @@ namespace CollarCali
             set => ignoreScenePlayers = value;
         }
 
-        public void BindNetworkOwner(FpsNetworkBridge bridge, System.Action<bool> onModeChanged)
+        public void BindNetworkOwner(PlayerNetworkBridge bridge, System.Action<bool> onModeChanged)
         {
             _networkBridge = bridge;
             _networkMode = true;
@@ -226,7 +229,7 @@ namespace CollarCali
 
         void Awake()
         {
-            if (GetComponent<FpsNetworkBridge>() != null)
+            if (GetComponent<PlayerNetworkBridge>() != null)
             {
                 _networkMode = true;
                 return;
@@ -236,6 +239,16 @@ namespace CollarCali
             CacheFps();
             EnsureFlashlight();
             ApplyMode(thirdPerson: false, teleport: false);
+        }
+
+        void OnEnable()
+        {
+            PlayerRigs.Register(this);
+        }
+
+        void OnDisable()
+        {
+            PlayerRigs.Unregister(this);
         }
 
         void OnDestroy()
@@ -1346,6 +1359,11 @@ namespace CollarCali
             // ThirdPersonJumpTuning from PlayerTuning > Third Person Jump.
             if (animal != null && animal.GetComponent<ThirdPersonJumpTuning>() == null)
                 animal.gameObject.AddComponent<ThirdPersonJumpTuning>();
+
+            // The walk, run and climb speeds are fitted to the player's body by
+            // CharacterBodyCalibration from PlayerTuning > Body.
+            if (animal != null && animal.GetComponent<CharacterBodyCalibration>() == null)
+                animal.gameObject.AddComponent<CharacterBodyCalibration>();
 
             if (_steveTuned || animal == null)
                 return;

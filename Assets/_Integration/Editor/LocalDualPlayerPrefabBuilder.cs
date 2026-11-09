@@ -27,7 +27,8 @@ namespace CollarCali.Editor
             SetupGameScene();
         }
 
-        [InitializeOnLoadMethod]
+        // No longer runs on every editor load: it could overwrite the Resources recipe with a
+        // stock-Cowsins shell while the player moves to third person only. Use the menu item.
         static void AutoBuildIfMissing()
         {
             EditorApplication.delayCall += () =>

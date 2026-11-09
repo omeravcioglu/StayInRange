@@ -7,7 +7,7 @@ namespace CollarCali
     /// the weapon's own damage, so a shotgun drops a zombie in one and a pistol does not - which
     /// is what makes weapon choice matter against a horde.
     /// </summary>
-    public class ZombieHealth : MonoBehaviour, cowsins.IDamageable
+    public class ZombieHealth : MonoBehaviour, cowsins.IDamageable, IDamageTarget
     {
         [Header("Health")]
         [SerializeField] float maxHealth = 100f;
@@ -207,10 +207,10 @@ namespace CollarCali
     ///
     /// Cowsins' own hit path resolves damage with GatherDamageableParent, which starts at the
     /// collider's PARENT and so finds ZombieHealth on the root without ever touching this. This
-    /// exists for anything that calls Damage on the collider's own GameObject directly, and to
-    /// keep a head hit counted as critical if it arrives that way.
+    /// exists for anything that calls Damage on the collider's own GameObject directly - as
+    /// DamageRouting does for every melee hit - and keeps a head hit counted as critical that way.
     /// </summary>
-    public class ZombieHitboxRelay : MonoBehaviour, cowsins.IDamageable
+    public class ZombieHitboxRelay : MonoBehaviour, cowsins.IDamageable, IDamageTarget
     {
         public ZombieHealth Root;
 

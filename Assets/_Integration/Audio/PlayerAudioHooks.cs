@@ -150,7 +150,7 @@ namespace CollarCali
         static bool OwnedLocally(PlayerStats stats)
         {
 #if CMPSETUP_COMPLETE
-            var bridge = stats.GetComponentInParent<FpsNetworkBridge>();
+            var bridge = stats.GetComponentInParent<PlayerNetworkBridge>();
             if (bridge != null && bridge.Object != null && bridge.Object.IsValid)
                 return bridge.IsLocalOwner;
 #endif

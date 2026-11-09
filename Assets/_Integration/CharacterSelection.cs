@@ -6,7 +6,7 @@ namespace CollarCali
     /// The one place the locally chosen character skin lives. Saved in PlayerPrefs so the pick made
     /// in the lobby survives the scene load into Game (the networked player reads it back the instant
     /// it spawns) and is remembered between sessions. The index is replicated per player through
-    /// FpsNetworkBridge.CharacterIndex, so everyone sees everyone else's pick.
+    /// PlayerNetworkBridge.CharacterIndex, so everyone sees everyone else's pick.
     /// </summary>
     public static class CharacterSelection
     {
@@ -89,13 +89,13 @@ namespace CollarCali
 
         /// <summary>
         /// Dresses a body the way a player in <paramref name="colourIndex"/> looks in the game, by the
-        /// same rule FpsNetworkBridge.ApplyIdentity uses: with a skin per colour (the shared body
+        /// same rule PlayerNetworkBridge.ApplyIdentity uses: with a skin per colour (the shared body
         /// recoloured four ways) the body wears that colour's skin; with a single skin (one character
         /// model) it wears that skin painted in the player colour.
         ///
         /// Painted through a property block rather than instanced materials, so a preview that changes
         /// colour every click leaves no material copies behind. For previews - the lobby's turntable -
-        /// not for networked bodies, which keep FpsNetworkBridge's own path.
+        /// not for networked bodies, which keep PlayerNetworkBridge's own path.
         /// </summary>
         public static void ApplyPlayerLook(GameObject visualRoot, int colourIndex)
         {

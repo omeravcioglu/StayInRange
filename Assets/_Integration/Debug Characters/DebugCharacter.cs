@@ -34,7 +34,7 @@ namespace CollarCali
     [DisallowMultipleComponent]
     public class DebugCharacter : MonoBehaviour
     {
-        /// <summary>The recipe the networked player uses (FpsNetworkBridge.EnsureDualPlayer).</summary>
+        /// <summary>The recipe the networked player uses (PlayerNetworkBridge.EnsureDualPlayer).</summary>
         const string GameRecipe = "LocalDualPlayer";
 
         static readonly int BaseColorId = Shader.PropertyToID("_BaseColor");
@@ -143,7 +143,7 @@ namespace CollarCali
 
         /// <summary>
         /// Steve in the player colour, exactly as the game dresses a player's own Steve
-        /// (FpsNetworkBridge.ApplyIdentity): the colour's skin when the library has one per colour,
+        /// (PlayerNetworkBridge.ApplyIdentity): the colour's skin when the library has one per colour,
         /// otherwise its one skin with the skinned meshes painted - props and weapons keep their own.
         /// </summary>
         void DressSteve()

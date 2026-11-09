@@ -15,7 +15,7 @@ namespace CollarCali.UI
     /// stamina) and draws the redesigned widgets, and it switches the vendor HUDs off without
     /// editing them, so a vendor update or a player-prefab rebuild cannot bring them back.
     ///
-    /// Added to the local player's bridge by FpsNetworkBridge, and gone with it. When Game.unity is
+    /// Added to the local player's bridge by PlayerNetworkBridge, and gone with it. When Game.unity is
     /// played on its own there is no session and no bridge: GamePlayerMainSetup adds it to the
     /// scene's offline test player (PlayerMain) instead, where it draws the same HUD for one player -
     /// the team panel is just you, and the collar, revive and teammate moments have nothing to show.
@@ -28,7 +28,7 @@ namespace CollarCali.UI
         const float FailedSeconds = 2.5f;
         const int NameLength = 12;
 
-        FpsNetworkBridge _local;
+        PlayerNetworkBridge _local;
         DualPlayerController _offlineDual;
         readonly CowsinsHudSource _cowsins = new CowsinsHudSource();
 
@@ -55,10 +55,10 @@ namespace CollarCali.UI
         WorldUiDirector _world;
         readonly MalbersPromptSource _malbersPrompts = new MalbersPromptSource();
 
-        readonly List<FpsNetworkBridge> _players = new List<FpsNetworkBridge>();
+        readonly List<PlayerNetworkBridge> _players = new List<PlayerNetworkBridge>();
         readonly List<TeamRowData> _rows = new List<TeamRowData>();
-        readonly Dictionary<FpsNetworkBridge, string> _names = new Dictionary<FpsNetworkBridge, string>();
-        readonly HashSet<FpsNetworkBridge> _knownDown = new HashSet<FpsNetworkBridge>();
+        readonly Dictionary<PlayerNetworkBridge, string> _names = new Dictionary<PlayerNetworkBridge, string>();
+        readonly HashSet<PlayerNetworkBridge> _knownDown = new HashSet<PlayerNetworkBridge>();
         bool _downsSeeded;
 
         float _nextRebind;
@@ -80,7 +80,7 @@ namespace CollarCali.UI
 
         void Awake()
         {
-            _local = GetComponent<FpsNetworkBridge>();
+            _local = GetComponent<PlayerNetworkBridge>();
             if (_local == null)
                 _offlineDual = GetComponent<DualPlayerController>();
             Build();
@@ -509,7 +509,7 @@ namespace CollarCali.UI
         void RefreshPlayers(float now)
         {
             _players.Clear();
-            foreach (var bridge in FpsNetworkBridge.All)
+            foreach (var bridge in PlayerNetworkBridge.All)
             {
                 if (bridge != null && bridge.Object != null && bridge.Object.IsValid)
                     _players.Add(bridge);
@@ -527,7 +527,7 @@ namespace CollarCali.UI
                 _names[player] = Shorten(player.DisplayName);
         }
 
-        string NameOf(FpsNetworkBridge player)
+        string NameOf(PlayerNetworkBridge player)
         {
             if (player == null)
                 return string.Empty;
@@ -541,7 +541,7 @@ namespace CollarCali.UI
             return name.Length <= NameLength ? name : name.Substring(0, NameLength - 1) + "…";
         }
 
-        FpsNetworkBridge FindByOwner(Fusion.PlayerRef owner)
+        PlayerNetworkBridge FindByOwner(Fusion.PlayerRef owner)
         {
             foreach (var player in _players)
             {
@@ -663,7 +663,7 @@ namespace CollarCali.UI
                 return default;
 
             // Whoever is furthest from you sets the level.
-            FpsNetworkBridge furthest = null;
+            PlayerNetworkBridge furthest = null;
             float metres = 0f;
             var origin = _local.GetNetworkAnchorPosition();
             foreach (var player in _players)

@@ -38,7 +38,7 @@ namespace CollarCali
         Canvas _canvas;
         Camera _camera;
         readonly List<Marker> _pool = new();
-        readonly Dictionary<FpsNetworkBridge, string> _names = new();
+        readonly Dictionary<PlayerNetworkBridge, string> _names = new();
         float _namesAt;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
@@ -82,7 +82,7 @@ namespace CollarCali
 
             // The registries, not a scene search: this runs every frame.
             bool anyoneDown = false;
-            foreach (var bridge in FpsNetworkBridge.All)
+            foreach (var bridge in PlayerNetworkBridge.All)
             {
                 if (bridge == null || bridge.Object == null || !bridge.Object.IsValid)
                     continue;
@@ -112,7 +112,7 @@ namespace CollarCali
 
         #region Drawing
 
-        int DrawTeammate(FpsNetworkBridge bridge, int index)
+        int DrawTeammate(PlayerNetworkBridge bridge, int index)
         {
             var theme = UiTheme.Active;
             var world = bridge.GetNetworkAnchorPosition() + Vector3.up * LabelHeight;
@@ -144,7 +144,7 @@ namespace CollarCali
         }
 
         /// <summary>The collar measures player to player, not camera to player - which differs while spectating.</summary>
-        static float DistanceFromLocal(FpsNetworkBridge bridge)
+        static float DistanceFromLocal(PlayerNetworkBridge bridge)
         {
             var local = NetworkCombatHooks.FindLocalBridge();
             return local == null
@@ -241,14 +241,14 @@ namespace CollarCali
                 return;
             _namesAt = Time.unscaledTime + NameRefreshSeconds;
             _names.Clear();
-            foreach (var bridge in FpsNetworkBridge.All)
+            foreach (var bridge in PlayerNetworkBridge.All)
             {
                 if (bridge != null && bridge.Object != null && bridge.Object.IsValid)
                     _names[bridge] = bridge.DisplayName;
             }
         }
 
-        string NameOf(FpsNetworkBridge bridge)
+        string NameOf(PlayerNetworkBridge bridge)
         {
             return _names.TryGetValue(bridge, out var name) ? name : bridge.DisplayName;
         }

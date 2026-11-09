@@ -28,7 +28,9 @@ namespace CollarCali.Editor
         /// <summary>Nested FPS child is named after its source prefab so a stale build is detectable.</summary>
         static string ExpectedFpsName => Path.GetFileNameWithoutExtension(CowsinsPlayerPath);
 
-        [InitializeOnLoadMethod]
+        // No longer runs on every editor load. The player is moving to a third-person-only prefab,
+        // and this rebuilt NetworkedFPSPlayer from the Cowsins rig and rewrote All Characters.asset
+        // and the Fusion prefab table behind everyone's back. The menu item still rebuilds it.
         static void AutoBuildIfMissing()
         {
             EditorApplication.delayCall += () =>
@@ -58,9 +60,9 @@ namespace CollarCali.Editor
                     return;
                 }
 
-                if (prefab.transform.Find(FpsNetworkBridge.DistanceOriginName) == null)
+                if (prefab.transform.Find(PlayerNetworkBridge.DistanceOriginName) == null)
                 {
-                    Debug.Log("[NetworkedFPSPlayer] Missing " + FpsNetworkBridge.DistanceOriginName +
+                    Debug.Log("[NetworkedFPSPlayer] Missing " + PlayerNetworkBridge.DistanceOriginName +
                               " anchor — rebuilding.");
                     Rebuild();
                     return;
@@ -127,9 +129,9 @@ namespace CollarCali.Editor
             fps.transform.localRotation = Quaternion.identity;
             fps.transform.localScale = Vector3.one;
 
-            var bridge = instance.GetComponent<FpsNetworkBridge>();
+            var bridge = instance.GetComponent<PlayerNetworkBridge>();
             if (bridge == null)
-                bridge = instance.AddComponent<FpsNetworkBridge>();
+                bridge = instance.AddComponent<PlayerNetworkBridge>();
 
             EnsureDistanceOrigin(instance);
             DeactivateOwnerOnlyRoots(fps);
@@ -192,10 +194,10 @@ namespace CollarCali.Editor
         /// </summary>
         static void EnsureDistanceOrigin(GameObject root)
         {
-            var origin = root.transform.Find(FpsNetworkBridge.DistanceOriginName);
+            var origin = root.transform.Find(PlayerNetworkBridge.DistanceOriginName);
             if (origin == null)
             {
-                var go = new GameObject(FpsNetworkBridge.DistanceOriginName);
+                var go = new GameObject(PlayerNetworkBridge.DistanceOriginName);
                 origin = go.transform;
                 origin.SetParent(root.transform, false);
             }
@@ -210,7 +212,7 @@ namespace CollarCali.Editor
         /// instantiates a remote player. Cowsins' UIController takes UIController.Instance there, and
         /// PoolManager/SoundManager/CoinManager destroy whichever copy loses their first-wins guard -
         /// which is how a proxy ended up killing the client's own managers and freezing its HUD.
-        /// Authoring these roots inactive means only the owner ever runs them; FpsNetworkBridge
+        /// Authoring these roots inactive means only the owner ever runs them; PlayerNetworkBridge
         /// already re-activates them in EnableLocalGameplay.
         /// </summary>
         static void DeactivateOwnerOnlyRoots(GameObject fps)
@@ -230,7 +232,7 @@ namespace CollarCali.Editor
             if (voice != null)
                 Object.DestroyImmediate(voice.gameObject);
 
-            // FpsNetworkBridge replicates discrete animation parameters instead. Leaving Fusion's
+            // PlayerNetworkBridge replicates discrete animation parameters instead. Leaving Fusion's
             // whole-Animator sync in place would have two systems writing the same controller.
             DestroyComponent<NetworkMecanimAnimator>(root);
 
@@ -256,7 +258,7 @@ namespace CollarCali.Editor
                 Object.DestroyImmediate(component);
         }
 
-        static void WireBridge(FpsNetworkBridge bridge, GameObject root, GameObject fps)
+        static void WireBridge(PlayerNetworkBridge bridge, GameObject root, GameObject fps)
         {
             var so = new SerializedObject(bridge);
             so.FindProperty("fpsRoot").objectReferenceValue = fps;
@@ -289,7 +291,7 @@ namespace CollarCali.Editor
             if (interp != null)
                 so.FindProperty("interpolationTarget").objectReferenceValue = interp;
 
-            var origin = root.transform.Find(FpsNetworkBridge.DistanceOriginName);
+            var origin = root.transform.Find(PlayerNetworkBridge.DistanceOriginName);
             if (origin != null)
                 so.FindProperty("distanceOrigin").objectReferenceValue = origin;
 
@@ -298,7 +300,7 @@ namespace CollarCali.Editor
         }
 
         /// <summary>
-        /// FpsNetworkBridge copies its runtime spawn sources from the LocalDualPlayer Resources
+        /// PlayerNetworkBridge copies its runtime spawn sources from the LocalDualPlayer Resources
         /// prefab, so it has to point at the same controller the network prefab was built from.
         /// </summary>
         static void SyncLocalDualPlayerSources()

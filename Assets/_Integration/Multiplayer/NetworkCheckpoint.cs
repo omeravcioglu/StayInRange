@@ -258,7 +258,7 @@ namespace CollarCali
             if (other == null)
                 return false;
 
-            var bridge = other.GetComponentInParent<FpsNetworkBridge>();
+            var bridge = other.GetComponentInParent<PlayerNetworkBridge>();
             if (TryReadPlayerId(bridge, out playerId))
                 return true;
 
@@ -268,8 +268,8 @@ namespace CollarCali
                 if (dual == null || !dual.OwnsCollider(other))
                     continue;
 
-                bridge = dual.GetComponent<FpsNetworkBridge>()
-                         ?? dual.GetComponentInParent<FpsNetworkBridge>();
+                bridge = dual.GetComponent<PlayerNetworkBridge>()
+                         ?? dual.GetComponentInParent<PlayerNetworkBridge>();
                 if (TryReadPlayerId(bridge, out playerId))
                     return true;
             }
@@ -283,7 +283,7 @@ namespace CollarCali
             return runner == null || !runner.IsRunning || runner.LocalPlayer.PlayerId == playerId;
         }
 
-        static bool TryReadPlayerId(FpsNetworkBridge bridge, out int playerId)
+        static bool TryReadPlayerId(PlayerNetworkBridge bridge, out int playerId)
         {
             playerId = -1;
             if (bridge == null || bridge.Object == null || !bridge.Object.IsValid || bridge.IsDead)

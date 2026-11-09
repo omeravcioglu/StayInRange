@@ -428,17 +428,17 @@ namespace CollarCali
         #region Targeting
 
         /// <summary>
-        /// Wraps whichever player representation exists: FpsNetworkBridge in a session, Cowsins
+        /// Wraps whichever player representation exists: PlayerNetworkBridge in a session, Cowsins
         /// PlayerStats when testing the scene on its own.
         /// </summary>
         readonly struct Target
         {
-            readonly FpsNetworkBridge _bridge;
+            readonly PlayerNetworkBridge _bridge;
             readonly PlayerStats _stats;
             readonly Transform _root;
             readonly Vector3 _aim;
 
-            public Target(FpsNetworkBridge bridge, PlayerStats stats, Transform root, Vector3 aim)
+            public Target(PlayerNetworkBridge bridge, PlayerStats stats, Transform root, Vector3 aim)
             {
                 _bridge = bridge;
                 _stats = stats;
@@ -485,7 +485,7 @@ namespace CollarCali
             Target best = default;
             float bestDistance = float.MaxValue;
 
-            var bridges = FindObjectsByType<FpsNetworkBridge>(FindObjectsSortMode.None);
+            var bridges = FindObjectsByType<PlayerNetworkBridge>(FindObjectsSortMode.None);
             if (bridges != null && bridges.Length > 0)
             {
                 foreach (var bridge in bridges)

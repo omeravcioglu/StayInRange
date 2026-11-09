@@ -16,7 +16,7 @@ namespace CollarCali
     /// DualPlayerController rather than from either controller directly.
     ///
     /// AUTHORITY. Nothing here decides who holds anything. Every pickup, catch, drop and throw is a
-    /// REQUEST - to the dead player's own machine for a body (FpsNetworkBridge RPCs), to the host for
+    /// REQUEST - to the dead player's own machine for a body (PlayerNetworkBridge RPCs), to the host for
     /// a prop (NetworkWorldActor RPCs) - which grants it to exactly one player; this component reacts
     /// when the grant replicates back. What it owns is the feel: the grip target the simulation pulls
     /// the held thing towards, the aim and charge, and the prompt.
@@ -44,7 +44,7 @@ namespace CollarCali
         /// <summary>Extra room in front of a held prop's furthest reach, so turning it never sweeps the camera.</summary>
         const float PropHoldMargin = 0.5f;
 
-        FpsNetworkBridge _self;
+        PlayerNetworkBridge _self;
         DualPlayerController _dual;
 
         InputAction _interact;
@@ -89,10 +89,10 @@ namespace CollarCali
 
         public bool IsHolding => _held != null && !ReferenceEquals(_held, _releasedLocally);
         public ITelekineticTarget HeldTarget => IsHolding ? _held : null;
-        public FpsNetworkBridge HeldBody => IsHolding ? _held as FpsNetworkBridge : null;
+        public PlayerNetworkBridge HeldBody => IsHolding ? _held as PlayerNetworkBridge : null;
         public bool IsAiming => IsHolding && _mode == Mode.Aiming;
 
-        public void Bind(FpsNetworkBridge self)
+        public void Bind(PlayerNetworkBridge self)
         {
             _self = self;
             Local = this;
@@ -317,7 +317,7 @@ namespace CollarCali
 
         ITelekineticTarget FindGranted(PlayerRef me)
         {
-            foreach (var body in FpsNetworkBridge.All)
+            foreach (var body in PlayerNetworkBridge.All)
             {
                 if (body == null || body == _self || body.Object == null || !body.Object.IsValid)
                     continue;
@@ -364,7 +364,7 @@ namespace CollarCali
         /// </summary>
         void HandBackOtherSimulations(ITelekineticTarget keep)
         {
-            foreach (var body in FpsNetworkBridge.All)
+            foreach (var body in PlayerNetworkBridge.All)
             {
                 if (body == null || body == _self || ReferenceEquals(body, keep) ||
                     body.Object == null || !body.Object.IsValid)
@@ -475,7 +475,7 @@ namespace CollarCali
         /// </summary>
         bool TryReviveHeld()
         {
-            if (!(_held is FpsNetworkBridge body))
+            if (!(_held is PlayerNetworkBridge body))
                 return false;
 
             var station = ReviveStation.FindFor(body);
@@ -676,7 +676,7 @@ namespace CollarCali
             float inReach = Mathf.Max(tuning.carry.pickupDistance, tuning.catching.maxCatchDistance);
             float bestScore = float.MaxValue;
 
-            foreach (var body in FpsNetworkBridge.All)
+            foreach (var body in PlayerNetworkBridge.All)
             {
                 if (body == null || body == _self || body.Object == null || !body.Object.IsValid)
                     continue;
@@ -854,7 +854,7 @@ namespace CollarCali
         /// <summary>The dead player whose ragdoll this collider is a bone of, or the prop it belongs to, or null.</summary>
         ITelekineticTarget TargetOwning(Collider collider)
         {
-            foreach (var bridge in FpsNetworkBridge.All)
+            foreach (var bridge in PlayerNetworkBridge.All)
             {
                 if (bridge == null || bridge == _self || !bridge.IsDead)
                     continue;
@@ -1024,7 +1024,7 @@ namespace CollarCali
                 return null;
 
             // Beside a station the same key revives instead - see TryReviveHeld.
-            var body = _held as FpsNetworkBridge;
+            var body = _held as PlayerNetworkBridge;
             string letGo = body != null && ReviveStation.FindFor(body) != null
                 ? "Revive " + body.DisplayName
                 : _held.DropVerb;

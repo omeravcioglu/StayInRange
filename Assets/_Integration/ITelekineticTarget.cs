@@ -7,7 +7,7 @@ namespace CollarCali
 {
     /// <summary>
     /// Anything a player can lift, carry, throw and catch with telekinesis: a dead teammate's body
-    /// (FpsNetworkBridge) or a prop such as a ladder (TelekineticProp).
+    /// (PlayerNetworkBridge) or a prop such as a ladder (TelekineticProp).
     ///
     /// Every implementation follows the same rules, which is what lets BodyTelekinesis treat them
     /// alike: one machine decides who holds it (the dead player's own machine for a body, the host
@@ -72,12 +72,12 @@ namespace CollarCali
 
     /// <summary>
     /// Something this machine is simulating and publishing through the local player's bridge
-    /// (FpsNetworkBridge.Driven*): a body or prop held or thrown by the local player, or the local
+    /// (PlayerNetworkBridge.Driven*): a body or prop held or thrown by the local player, or the local
     /// player's own corpse while it lies loose.
     /// </summary>
     public interface ITelekineticSimulation
     {
-        /// <summary>The network object other machines match against FpsNetworkBridge.DrivenBody.</summary>
+        /// <summary>The network object other machines match against PlayerNetworkBridge.DrivenBody.</summary>
         NetworkId PublishedId { get; }
 
         bool IsSimulatedHere { get; }

@@ -165,7 +165,7 @@ namespace CollarCali
 #if CMPSETUP_COMPLETE
             // The local player's own sources travel with the listener, so a wall can never be
             // between them and it - and testing would only waste a raycast.
-            if (source.GetComponentInParent<FpsNetworkBridge>() != null)
+            if (source.GetComponentInParent<PlayerNetworkBridge>() != null)
                 return false;
 #endif
             if (source.GetComponentInParent<cowsins.PlayerMovement>() != null)

@@ -25,7 +25,7 @@ namespace CollarCali.UI
 
         public static MomentDirector Instance { get; private set; }
 
-        FpsNetworkBridge _local;
+        PlayerNetworkBridge _local;
         Canvas _backCanvas;
         Canvas _frontCanvas;
         MomentsView _view;
@@ -45,16 +45,16 @@ namespace CollarCali.UI
 
         float _downUntil;
         string _downName;
-        readonly HashSet<FpsNetworkBridge> _knownDown = new HashSet<FpsNetworkBridge>();
+        readonly HashSet<PlayerNetworkBridge> _knownDown = new HashSet<PlayerNetworkBridge>();
         bool _downSeeded;
 
         int _seenFailureSeq = int.MinValue;
         float _failureAt = -100f;
 
-        readonly Dictionary<FpsNetworkBridge, string> _names = new Dictionary<FpsNetworkBridge, string>();
+        readonly Dictionary<PlayerNetworkBridge, string> _names = new Dictionary<PlayerNetworkBridge, string>();
         float _namesAt;
 
-        public static MomentDirector Create(FpsNetworkBridge local)
+        public static MomentDirector Create(PlayerNetworkBridge local)
         {
             var go = new GameObject("MomentDirector");
             var director = go.AddComponent<MomentDirector>();
@@ -244,7 +244,7 @@ namespace CollarCali.UI
         /// <summary>A living player is told when a teammate goes down, and what to do about it.</summary>
         void WatchTeammates(float now, bool dead)
         {
-            foreach (var player in FpsNetworkBridge.All)
+            foreach (var player in PlayerNetworkBridge.All)
             {
                 if (player == null || player == _local || player.Object == null || !player.Object.IsValid)
                     continue;
@@ -289,9 +289,9 @@ namespace CollarCali.UI
             // Where the body is on its way back: Down -> Lifted -> At a revive station -> Revived.
             var body = _local.DownState != null ? _local.DownState.BodyPosition : _local.GetNetworkAnchorPosition();
 
-            FpsNetworkBridge closest = null;
+            PlayerNetworkBridge closest = null;
             float closestMetres = float.MaxValue;
-            foreach (var player in FpsNetworkBridge.All)
+            foreach (var player in PlayerNetworkBridge.All)
             {
                 if (player == null || player == _local || player.IsDead || player.Object == null || !player.Object.IsValid)
                     continue;
@@ -343,23 +343,23 @@ namespace CollarCali.UI
                 return;
             _namesAt = now + NamesRefreshSeconds;
             _names.Clear();
-            foreach (var player in FpsNetworkBridge.All)
+            foreach (var player in PlayerNetworkBridge.All)
             {
                 if (player != null && player.Object != null && player.Object.IsValid)
                     _names[player] = player.DisplayName;
             }
         }
 
-        string NameOf(FpsNetworkBridge player)
+        string NameOf(PlayerNetworkBridge player)
         {
             if (player == null)
                 return "Someone";
             return _names.TryGetValue(player, out var name) ? name : player.DisplayName;
         }
 
-        static FpsNetworkBridge FindByOwner(Fusion.PlayerRef owner)
+        static PlayerNetworkBridge FindByOwner(Fusion.PlayerRef owner)
         {
-            foreach (var player in FpsNetworkBridge.All)
+            foreach (var player in PlayerNetworkBridge.All)
             {
                 if (player != null && player.Object != null && player.Object.IsValid && player.Owner == owner)
                     return player;

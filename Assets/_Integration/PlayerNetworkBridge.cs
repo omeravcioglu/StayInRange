@@ -14,7 +14,7 @@ namespace CollarCali
     /// remote clones never enable local-only Cowsins systems.
     /// </summary>
     [DefaultExecutionOrder(-200)]
-    public class FpsNetworkBridge : NetworkBehaviour, INetworkedDamageRouter, IDamageable, ITelekineticTarget
+    public class PlayerNetworkBridge : NetworkBehaviour, INetworkedDamageRouter, IDamageable, IDamageTarget, ITelekineticTarget
     {
         [Header("FPS Engine")]
         [SerializeField] GameObject fpsRoot;
@@ -159,9 +159,9 @@ namespace CollarCali
         public PlayerRef Owner => Object != null ? Object.StateAuthority : PlayerRef.None;
 
         /// <summary>Every spawned player, living or dead. Kept here so per-frame lookups never scan the scene.</summary>
-        public static readonly List<FpsNetworkBridge> All = new List<FpsNetworkBridge>();
+        public static readonly List<PlayerNetworkBridge> All = new List<PlayerNetworkBridge>();
 
-        public static FpsNetworkBridge FindByPlayer(PlayerRef player)
+        public static PlayerNetworkBridge FindByPlayer(PlayerRef player)
         {
             if (player == PlayerRef.None)
                 return null;
@@ -233,14 +233,14 @@ namespace CollarCali
                     SyncedShield = _cowsinsStats.Shield;
                 }
                 // #region agent log
-                AgentDebugLog.Write("F", "FpsNetworkBridge.Spawned", "local_owner",
+                AgentDebugLog.Write("F", "PlayerNetworkBridge.Spawned", "local_owner",
                     "{\"colorIndex\":" + ColorIndex +
                     ",\"hasDual\":" + (_dual != null ? "true" : "false") +
                     ",\"fpsRoot\":\"" + (fpsRoot != null ? fpsRoot.name : "null") +
                     "\",\"pos\":\"" + transform.position.ToString() + "\"}");
                 AgentDebugLog.LogPlayerSetup(
                     "H1",
-                    "FpsNetworkBridge.Spawned",
+                    "PlayerNetworkBridge.Spawned",
                     "network_menu_join",
                     fpsRoot,
                     _dual != null ? _dual.SteveRoot : null,
@@ -253,7 +253,7 @@ namespace CollarCali
                 _lastSeenFireSeq = FireSeq;
                 ApplyIdentity();
                 // #region agent log
-                AgentDebugLog.Write("F", "FpsNetworkBridge.Spawned", "remote_proxy",
+                AgentDebugLog.Write("F", "PlayerNetworkBridge.Spawned", "remote_proxy",
                     "{\"colorIndex\":" + ColorIndex + "}");
                 // #endregion
             }
@@ -294,7 +294,7 @@ namespace CollarCali
 
             if (cowsinsPrefab == null)
             {
-                Debug.LogError("[FpsNetworkBridge] Cowsins FPS prefab is not assigned.");
+                Debug.LogError("[PlayerNetworkBridge] Cowsins FPS prefab is not assigned.");
                 return;
             }
 
@@ -726,7 +726,7 @@ namespace CollarCali
             AuthorityTeleport(position, yawDegrees);
 
             // #region agent log
-            AgentDebugLog.Write("E", "FpsNetworkBridge.TeamFailAndRespawnRoutine", "after_first_teleport",
+            AgentDebugLog.Write("E", "PlayerNetworkBridge.TeamFailAndRespawnRoutine", "after_first_teleport",
                 "{\"requested\":\"" + position.ToString() +
                 "\",\"root\":\"" + transform.position.ToString() +
                 "\",\"gameplay\":\"" + GetGameplayWorldPosition().ToString() +
@@ -744,7 +744,7 @@ namespace CollarCali
             AuthorityTeleport(position, yawDegrees);
 
             // #region agent log
-            AgentDebugLog.Write("E", "FpsNetworkBridge.TeamFailAndRespawnRoutine", "after_respawn_teleport",
+            AgentDebugLog.Write("E", "PlayerNetworkBridge.TeamFailAndRespawnRoutine", "after_respawn_teleport",
                 "{\"requested\":\"" + position.ToString() +
                 "\",\"root\":\"" + transform.position.ToString() +
                 "\",\"gameplay\":\"" + GetGameplayWorldPosition().ToString() + "\"}");
@@ -876,7 +876,7 @@ namespace CollarCali
                     camerasSrc = cam != null ? cam.name : "null";
                 }
 
-                AgentDebugLog.Write("H1", "FpsNetworkBridge.EnsureDualPlayer", "source_prefabs",
+                AgentDebugLog.Write("H1", "PlayerNetworkBridge.EnsureDualPlayer", "source_prefabs",
                     "{\"cowsinsSrc\":\"" + cowsinsSrc +
                     "\",\"steveSrc\":\"" + steveSrc +
                     "\",\"camerasSrc\":\"" + camerasSrc +

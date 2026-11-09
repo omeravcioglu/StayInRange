@@ -239,7 +239,7 @@ namespace CollarCali
             float worldDist = worldHit ? wHit.distance : float.MaxValue;
 
             float playerDist = float.MaxValue;
-            FpsNetworkBridge hitBridge = null;
+            PlayerNetworkBridge hitBridge = null;
             PlayerStats hitStats = null;
             Vector3 playerPoint = to;
 
@@ -270,7 +270,7 @@ namespace CollarCali
         /// Returns float.MaxValue when none. Collider-free, so it works for remote proxies whose
         /// only network collider is a trigger.
         /// </summary>
-        static float FindPlayerAlongSegment(Vector3 a, Vector3 b, out FpsNetworkBridge bridge,
+        static float FindPlayerAlongSegment(Vector3 a, Vector3 b, out PlayerNetworkBridge bridge,
             out PlayerStats stats, out Vector3 point)
         {
             bridge = null;
@@ -288,7 +288,7 @@ namespace CollarCali
             const float bodyRadius = 0.6f;
             float reach = MagicProjectileFx.Radius + bodyRadius;
 
-            var bridges = Object.FindObjectsByType<FpsNetworkBridge>(FindObjectsSortMode.None);
+            var bridges = Object.FindObjectsByType<PlayerNetworkBridge>(FindObjectsSortMode.None);
             if (bridges != null && bridges.Length > 0)
             {
                 foreach (var br in bridges)
@@ -321,7 +321,7 @@ namespace CollarCali
             return best;
         }
 
-        void DamagePlayer(FpsNetworkBridge bridge, PlayerStats stats)
+        void DamagePlayer(PlayerNetworkBridge bridge, PlayerStats stats)
         {
             if (bridge != null && !bridge.IsDead)
                 bridge.TryRouteDamage(_damage, false);

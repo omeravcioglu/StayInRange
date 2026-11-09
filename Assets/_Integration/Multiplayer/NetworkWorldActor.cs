@@ -23,7 +23,7 @@ namespace CollarCali
         [Networked] public float AnimTime { get; set; }
 
         // A telekinetic prop's handling (Kind Prop only) - see TelekineticProp. The same scheme as a
-        // dead player's body on FpsNetworkBridge, with the host as the one authority deciding.
+        // dead player's body on PlayerNetworkBridge, with the host as the one authority deciding.
 
         /// <summary>Who holds the prop in a telekinetic grip, or None.</summary>
         [Networked] public PlayerRef PropHolder { get; set; }
@@ -314,7 +314,7 @@ namespace CollarCali
         }
 
         /// <summary>Returns false when the grab could not be handed to the victim's owner.</summary>
-        public bool NotifyGrab(FpsNetworkBridge victim, bool grabbed)
+        public bool NotifyGrab(PlayerNetworkBridge victim, bool grabbed)
         {
             if (!HasStateAuthority || victim == null || victim.Object == null)
                 return false;
@@ -333,7 +333,7 @@ namespace CollarCali
         /// Lifting and catching are the same request: put the prop in my grip. Granted only while
         /// nobody holds it, only if the sender saw the current epoch, and only to a living player -
         /// so of two players catching the same throw, exactly one succeeds. Mirrors
-        /// FpsNetworkBridge.RPC_RequestHold.
+        /// PlayerNetworkBridge.RPC_RequestHold.
         /// </summary>
         [Rpc(RpcSources.All, RpcTargets.StateAuthority)]
         public void RPC_PropHold(int epoch, NetworkBool catching, RpcInfo info = default)
@@ -342,7 +342,7 @@ namespace CollarCali
             if (!IsProp || PropHolder != PlayerRef.None || epoch != PropEpoch)
                 return;
 
-            var requester = FpsNetworkBridge.FindByPlayer(source);
+            var requester = PlayerNetworkBridge.FindByPlayer(source);
             if (requester == null || requester.IsDead)
                 return;
 
@@ -410,8 +410,8 @@ namespace CollarCali
             if (PropHolder == PlayerRef.None && PropDriver == PlayerRef.None)
                 return;
 
-            var holder = PropHolder != PlayerRef.None ? FpsNetworkBridge.FindByPlayer(PropHolder) : null;
-            var driver = PropDriver != PlayerRef.None ? FpsNetworkBridge.FindByPlayer(PropDriver) : null;
+            var holder = PropHolder != PlayerRef.None ? PlayerNetworkBridge.FindByPlayer(PropHolder) : null;
+            var driver = PropDriver != PlayerRef.None ? PlayerNetworkBridge.FindByPlayer(PropDriver) : null;
             bool holderGone = PropHolder != PlayerRef.None && (holder == null || holder.IsDead);
             bool driverGone = PropDriver != PlayerRef.None && (driver == null || driver.IsDead);
             if (!holderGone && !driverGone)
@@ -837,7 +837,7 @@ namespace CollarCali
         {
             if (go == null)
                 return false;
-            return go.GetComponentInParent<FpsNetworkBridge>() != null
+            return go.GetComponentInParent<PlayerNetworkBridge>() != null
                    || go.GetComponentInParent<PlayerMovement>() != null
                    || go.GetComponentInParent<DualPlayerController>() != null
                    || go.GetComponentInParent<MalbersAnimations.Controller.MAnimal>() != null
