@@ -29,6 +29,20 @@
 
 **Status:** playable prototype. The full co-op loop, three enemy types, pickups, traps and sound effects work. The whole UI was redesigned in September 2026, and Windows builds were made. The levels are assembled from store art, and some test scenes and debug logging remain (see *Known leftovers*).
 
+**In progress (November 2026): a third-person-only player.** The player is moving off the Cowsins FPS rig to the third-person controller, and the plan replaces the guns with melee.
+- **Groundwork (7 November):**
+  - The Cowsins prefab builders no longer rebuild prefabs on every editor load.
+  - Five shared assets moved out of `Assets/Cowsins` with their GUIDs, ahead of removing it.
+  - A shared damage contract, the new player health and a player-rig interface were added.
+  - `FpsNetworkBridge` was renamed `PlayerNetworkBridge`.
+  - Gameplay is unchanged.
+- **Phase 1, the character rig (9 November; it compiles but hasn't been tested in Unity yet):**
+  - The player model imports at 0.75 scale (about 1.85 m instead of 2.48 m).
+  - Its avatar is rebuilt from the model's real bind pose, which had sunk the feet.
+  - Root-motion animations play faster by the size difference, so the smaller body keeps the speeds the levels were built for.
+  - The player prefabs nest the model, so they follow every re-import.
+  - An editor check measures how the body sits on the ground and in its capsule.
+
 ## Tech stack
 
 | Area | What it uses |
@@ -45,14 +59,14 @@
 
 ## What I built
 
-All of the integration and game code lives in **`Assets/_Integration/`**: 178 C# scripts, about 46k lines.
+All of the integration and game code lives in **`Assets/_Integration/`**: 187 C# scripts, about 48.5k lines.
 
 | System | Key scripts |
 |---|---|
 | The collar: team-distance rule, checkpoints, wipe screen, world markers | `Multiplayer/TeamDistanceManager.cs`, `Multiplayer/NetworkCheckpoint.cs`, `TeamWipePanel.cs`, `WorldMarkerHud.cs` |
 | Down / carry / revive / spectate loop | `PlayerDownState.cs`, `ReviveStation.cs`, `SpectatorController.cs`, `PlayerRagdoll.cs` |
 | Telekinesis for bodies and props: lift, carry, charged throw with a predicted landing arc, mid-air catch; all tuning in one asset | `BodyTelekinesis.cs`, `ITelekineticTarget.cs`, `TelekineticProp.cs`, `ThrowTrajectory.cs`, `BodyCarryHud.cs`, `PlayerTuning.cs` |
-| Networked FPS player (single-player FPS asset turned multiplayer, including damage routing) | `FpsNetworkBridge.cs`, `RemoteWeaponVisual.cs` |
+| Networked player (a single-player FPS asset turned multiplayer, including damage routing) | `PlayerNetworkBridge.cs` (formerly `FpsNetworkBridge`), `RemoteWeaponVisual.cs` |
 | Lobby, ready-up, character/skin selection with a live 3D preview on a turntable | `Multiplayer/LobbyController.cs`, `Multiplayer/LobbyPlayer.cs`, `CharacterSelection.cs`, `CharacterPreviewStage.cs` |
 | Redesigned UI: shared kit and theme (hand-drawn sprites, two fonts), title screen, room browser, lobby roster, pause menu, loading screen, error popup | `UI/Core/UiKit.cs`, `UiTheme.cs`, `UI/Screens/MenuFlow.cs`, `RoomBrowserView.cs`, `LobbyView.cs`, `PauseController.cs`, `UI/Session/LoadingOverlayView.cs`, `ErrorPopupView.cs` |
 | One HUD for both controllers (first-person Cowsins, third-person Malbers), full-screen moments, world-space pickup labels | `UI/Hud/HudRoot.cs`, `CowsinsHudSource.cs`, `MalbersPromptSource.cs`, `UI/Hud/Moments/MomentDirector.cs`, `UI/World/WorldUiDirector.cs`, `PickupLabel.cs` |
@@ -64,13 +78,15 @@ All of the integration and game code lives in **`Assets/_Integration/`**: 178 C#
 | Enemies | `ZombieEnemy.cs`, `ZombieAmbushSpawner.cs`, `CreepGrabEnemy.cs`, `MagicianEnemy.cs` |
 | Networked pickups, VFX and traps | `NetworkWeaponPickup.cs`, `NetworkVfxRelay.cs`, `NetworkedSweepingLaser.cs`, `NetworkedBlinkingPlatform.cs` |
 | First-person ↔ third-person parkour switching, and the third-person jump's air control | `DualPlayerController.cs`, `MalbersClimbable.cs`, `ThirdPersonJumpTuning.cs` |
+| Third-person groundwork: one damage contract for every attack, the third-person player's health, and the player rig as other systems see it | `Combat/IDamageTarget.cs`, `Combat/DamageRouting.cs`, `Player/PlayerVitals.cs`, `Player/IPlayerRig.cs` |
+| Character rig tools (in progress): the avatar and scale fix, a fit check that poses the body with foot IK, animation speeds matched to the smaller body, rescaling hand-posed copies in scenes | `Editor/Character/CharacterAvatarFixer.cs`, `CharacterFitCheck.cs`, `CharacterPosedCopyMigration.cs`, `Player/CharacterBodyCalibration.cs`, `Editor/CharacterVisualBuilder.cs` |
 | Audio (SFX library, occlusion) | `Audio/GameSfx.cs`, `Audio/WorldAudioOccluder.cs`, `Editor/SfxLibraryBuilder.cs` |
 | Level generators | `Editor/HospitalWingBuilder.cs`, `Editor/LabShaftBuilder.cs`, `Editor/GrandShaftBuilder.cs` |
 
 **Integration changes to store assets:**
 - Cowsins: `Bullet`, `ExplosiveBarrel`, `WeaponPickeable`, `InteractManager`, `PlayerStats`
 - Emerald AI: `EmeraldHealth`
-- Clean Multiplayer Pro: `FusionConnection`, `InGame_Manager`, `ChatPlayer`
+- Clean Multiplayer Pro: `FusionConnection`, `InGame_Manager`, `ChatPlayer`, `PlayerStats`
 
 These scripts were changed to call into the game's own code.
 
@@ -79,7 +95,10 @@ These scripts were changed to call into the game's own code.
 ### Code highlights
 
 - **`Assets/_Integration/Multiplayer/TeamDistanceManager.cs`:** the core collar mechanic. It tracks team distance with a danger zone, a grace timer and a synchronized team reset to the last checkpoint.
-- **`Assets/_Integration/FpsNetworkBridge.cs`:** wraps a single-player FPS framework into a networked player, including routing damage to the right authority.
+- **`Assets/_Integration/PlayerNetworkBridge.cs`** (formerly `FpsNetworkBridge`): wraps a single-player FPS framework into a networked player, including routing damage to the right authority.
+- **`Assets/_Integration/Combat/IDamageTarget.cs`** + **`DamageRouting.cs`:** the damage contract for the coming third-person player.
+  - `IDamageTarget` has the same `Damage(float, bool)` as Cowsins' `IDamageable`, so one method serves both while Cowsins is phased out.
+  - `DamageRouting` finds the target from the collider that was hit (or its parents), and treats hitboxes tagged "Critical" as critical hits.
 - **`Assets/_Integration/Multiplayer/NetworkWorldActor.cs`:** the master client simulates the enemies. Each client finds its local copy of a scene object from a hash of its scene path, so scene-placed actors need no manual network IDs.
 - **`Assets/_Integration/Editor/HospitalWingBuilder.cs`:** builds a hospital wing from an ASCII map, working out walls, corners and doors automatically.
 - **`Assets/_Integration/PlayerDownState.cs`** + **`ReviveStation.cs`:** the carry-to-revive loop, where one player physically carries another's body across the level.
