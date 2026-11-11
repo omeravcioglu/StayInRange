@@ -25,6 +25,9 @@ namespace CollarCali.EditorTools
     /// deformed mesh is baked; each foot's lowest point is its sole, and a sole below zero is a foot
     /// in the floor.
     ///
+    /// On a player prefab it also checks that the head stays inside the main capsule, that the HB_*
+    /// hitboxes hold the head and torso, and that no reference points at an object that is gone.
+    ///
     /// Reports land in Builds/CharacterFit/&lt;timestamp&gt;: report.md, report.json, side.png (the
     /// idle pose with the ground line, the main capsule and a 10 cm ruler) and poses.png (each clip
     /// at its deepest moment). Run it from Tools ▸ CollarCali ▸ Character with a prefab or model
@@ -72,6 +75,11 @@ namespace CollarCali.EditorTools
         const float MovingDeepestMax = 0.015f;                          // and every stride reaches the ground
         const float BodyDeepestMin = -0.025f;                           // nothing else goes into the ground
         const float HeightMin = 1.82f, HeightMax = 1.88f;               // the player's standing height
+        const float CapsuleHeadroom = 0.10f;                            // the head may rise this far above the main capsule
+        const float HitboxCoverageMin = 0.85f;                          // of the head and torso, inside the hitboxes
+
+        /// <summary>The name every hitbox collider starts with (HB_Pelvis, HB_Torso, HB_Head).</summary>
+        public const string HitboxPrefix = "HB_";
 
         [Serializable]
         public class ClipResult
@@ -122,6 +130,9 @@ namespace CollarCali.EditorTools
             public float capsuleBottom = float.NaN;
             public float capsuleTop = float.NaN;
             public float capsuleRadius = float.NaN;
+            public int hitboxes;                       // colliders named HB_* on the target
+            public float hitboxCoverage = float.NaN;   // share of the head and torso inside them, first idle pose
+            public List<string> dangling = new List<string>();  // references to objects that no longer exist
             public List<BoneHeight> bones = new List<BoneHeight>();  // first idle pose
             public List<Band> profile = new List<Band>();            // first idle pose
             public List<ClipResult> clips = new List<ClipResult>();
@@ -276,6 +287,16 @@ namespace CollarCali.EditorTools
                     report.capsuleRadius = capsule.radius * scale;
                 }
 
+                report.dangling = DanglingReferences(subject.Instance);
+                var hitboxes = subject.Instance.GetComponentsInChildren<Collider>(true)
+                    .Where(c => c.name.StartsWith(HitboxPrefix, StringComparison.Ordinal)).ToList();
+                report.hitboxes = hitboxes.Count;
+                if (hitboxes.Count > 0 && idle != null)
+                {
+                    subject.PoseAt(idle, 0, footIK);
+                    report.hitboxCoverage = subject.Coverage(hitboxes, CoreBones(animator));
+                }
+
                 if (!string.IsNullOrEmpty(folder))
                     TryPictures(subject, report, idle, deepestTimes, footIK, folder);
 
@@ -356,6 +377,13 @@ namespace CollarCali.EditorTools
 
             if (report.humanoid && (report.meshTop < HeightMin || report.meshTop > HeightMax))
                 report.failures.Add($"Standing height {report.meshTop:0.000} m (want {HeightMin:0.00}..{HeightMax:0.00} m).");
+
+            if (!float.IsNaN(report.capsuleTop) && report.meshTop - report.capsuleTop > CapsuleHeadroom)
+                report.failures.Add($"The head rises {Mm(report.meshTop - report.capsuleTop)} above the main capsule (limit {Mm(CapsuleHeadroom)}).");
+            if (report.hitboxes > 0 && !(report.hitboxCoverage >= HitboxCoverageMin))
+                report.failures.Add($"The hitboxes hold {report.hitboxCoverage:P0} of the head and torso (want {HitboxCoverageMin:P0}).");
+            foreach (var d in report.dangling)
+                report.failures.Add("Dangling reference: " + d);
 
             report.pass = report.humanoid && report.failures.Count == 0;
         }
@@ -664,6 +692,44 @@ namespace CollarCali.EditorTools
                 return bands.Values.ToList();
             }
 
+            /// <summary>
+            /// The share of the vertices carried by <paramref name="bones"/> that lie inside any of
+            /// <paramref name="hitboxes"/> in the current pose, or NaN when none are carried by them.
+            /// </summary>
+            public float Coverage(IList<Collider> hitboxes, HashSet<Transform> bones)
+            {
+                int inside = 0, total = 0;
+                for (int r = 0; r < _renderers.Count; r++)
+                {
+                    var renderer = _renderers[r];
+                    var rendererBones = renderer.bones;
+                    var dominant = _dominant[r];
+                    renderer.BakeMesh(_baked, false);
+                    _baked.GetVertices(_vertices);
+                    var t = renderer.transform;
+                    var m = Matrix4x4.TRS(t.position, t.rotation, Vector3.one);
+                    for (int i = 0; i < Mathf.Min(_vertices.Count, dominant.Length); i++)
+                    {
+                        int b = dominant[i];
+                        if (b < 0 || b >= rendererBones.Length || rendererBones[b] == null || !bones.Contains(rendererBones[b]))
+                            continue;
+
+                        total++;
+                        var p = m.MultiplyPoint3x4(_vertices[i]);
+                        foreach (var hitbox in hitboxes)
+                        {
+                            if (Contains(hitbox, p))
+                            {
+                                inside++;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                return total > 0 ? (float)inside / total : float.NaN;
+            }
+
             public void Dispose()
             {
                 if (_baked != null)
@@ -671,6 +737,111 @@ namespace CollarCali.EditorTools
                 _baked = null;
                 if (Scene.IsValid())
                     EditorSceneManager.ClosePreviewScene(Scene);
+            }
+        }
+
+        /// <summary>
+        /// Every serialized reference on <paramref name="instance"/> that points at an object that no
+        /// longer exists (shown as Missing in the Inspector), and every missing script, as
+        /// "path/Component.field". Capped, so a badly broken prefab still gives a readable report.
+        /// </summary>
+        public static List<string> DanglingReferences(GameObject instance, int cap = 40)
+        {
+            var found = new List<string>();
+            foreach (var t in instance.GetComponentsInChildren<Transform>(true))
+            {
+                string path = PathOf(t, instance.transform);
+                int missingScripts = GameObjectUtility.GetMonoBehavioursWithMissingScriptCount(t.gameObject);
+                if (missingScripts > 0)
+                    found.Add($"{path}: {missingScripts} missing script(s)");
+
+                foreach (var component in t.GetComponents<Component>())
+                {
+                    if (component == null || component is Transform)
+                        continue;
+
+                    var property = new SerializedObject(component).GetIterator();
+                    while (property.Next(true))
+                    {
+                        if (property.propertyType == SerializedPropertyType.ObjectReference &&
+                            property.objectReferenceValue == null && property.objectReferenceInstanceIDValue != 0)
+                            found.Add($"{path}/{component.GetType().Name}.{property.propertyPath}");
+                    }
+                }
+
+                if (found.Count >= cap)
+                {
+                    found.Add("(more not listed)");
+                    break;
+                }
+            }
+
+            return found;
+        }
+
+        static string PathOf(Transform t, Transform root)
+        {
+            var parts = new List<string>();
+            for (var c = t; c != null && c != root; c = c.parent)
+                parts.Add(c.name);
+            parts.Add(root.name);
+            parts.Reverse();
+            return string.Join("/", parts);
+        }
+
+        /// <summary>The head and torso: the hips and everything under them except the arms and legs.</summary>
+        static HashSet<Transform> CoreBones(Animator animator)
+        {
+            var limbs = new HashSet<Transform>();
+            foreach (var bone in new[] { HumanBodyBones.LeftUpperArm, HumanBodyBones.RightUpperArm,
+                         HumanBodyBones.LeftUpperLeg, HumanBodyBones.RightUpperLeg })
+            {
+                var t = animator.GetBoneTransform(bone);
+                if (t != null)
+                    limbs.UnionWith(t.GetComponentsInChildren<Transform>(true));
+            }
+
+            var core = new HashSet<Transform>();
+            var hips = animator.GetBoneTransform(HumanBodyBones.Hips);
+            if (hips != null)
+                core.UnionWith(hips.GetComponentsInChildren<Transform>(true).Where(t => !limbs.Contains(t)));
+            return core;
+        }
+
+        /// <summary>Whether <paramref name="p"/> lies inside <paramref name="c"/>, worked out from its shape (no physics scene needed).</summary>
+        static bool Contains(Collider c, Vector3 p)
+        {
+            var t = c.transform;
+            var s = t.lossyScale;
+            switch (c)
+            {
+                case SphereCollider sphere:
+                {
+                    float r = sphere.radius * Mathf.Max(Mathf.Abs(s.x), Mathf.Abs(s.y), Mathf.Abs(s.z));
+                    return (p - t.TransformPoint(sphere.center)).sqrMagnitude <= r * r;
+                }
+                case CapsuleCollider capsule:
+                {
+                    int d = capsule.direction;
+                    float axisScale = Mathf.Abs(d == 0 ? s.x : d == 1 ? s.y : s.z);
+                    float radiusScale = d == 0 ? Mathf.Max(Mathf.Abs(s.y), Mathf.Abs(s.z))
+                        : d == 1 ? Mathf.Max(Mathf.Abs(s.x), Mathf.Abs(s.z))
+                        : Mathf.Max(Mathf.Abs(s.x), Mathf.Abs(s.y));
+                    float r = capsule.radius * radiusScale;
+                    float half = Mathf.Max(capsule.height * axisScale * 0.5f - r, 0f);
+                    var centre = t.TransformPoint(capsule.center);
+                    var axis = t.TransformDirection(d == 0 ? Vector3.right : d == 1 ? Vector3.up : Vector3.forward).normalized;
+                    float along = Mathf.Clamp(Vector3.Dot(p - centre, axis), -half, half);
+                    return (p - (centre + axis * along)).sqrMagnitude <= r * r;
+                }
+                case BoxCollider box:
+                {
+                    var local = t.InverseTransformPoint(p) - box.center;
+                    var e = box.size * 0.5f;
+                    return Mathf.Abs(local.x) <= e.x && Mathf.Abs(local.y) <= e.y && Mathf.Abs(local.z) <= e.z;
+                }
+                default:
+                    return c.bounds.Contains(p);
             }
         }
 
@@ -876,6 +1047,8 @@ namespace CollarCali.EditorTools
             sb.AppendLine($"Height {r.meshTop:0.000} m, soles {Mm(r.meshBottom)} (idle), hips {r.hipsHeight:0.000} m, humanScale {r.humanScale:0.000}, Foot IK {(r.footIK ? "on" : "off")}");
             if (!float.IsNaN(r.capsuleBottom))
                 sb.AppendLine($"Capsule {r.capsuleBottom:0.000}..{r.capsuleTop:0.000} m, radius {r.capsuleRadius:0.000}");
+            if (r.hitboxes > 0)
+                sb.AppendLine($"Hitboxes {r.hitboxes}, holding {r.hitboxCoverage:P0} of the head and torso");
             foreach (var c in r.clips)
                 sb.AppendLine($"  {c.clip} ({c.rootFrom}): deepest {Mm(c.deepest)}, average {Mm(c.plantedMean)}, highest {Mm(c.highest)}; lowest part {c.bodyDeepestPart} {Mm(c.bodyDeepest)}");
             foreach (var f in r.failures)
@@ -896,6 +1069,8 @@ namespace CollarCali.EditorTools
             sb.AppendLine($"- Hips: {r.hipsHeight:0.000} m; humanScale {r.humanScale:0.000}; feet bottom heights L {r.leftFeetBottomHeight:0.000} / R {r.rightFeetBottomHeight:0.000}");
             if (!float.IsNaN(r.capsuleBottom))
                 sb.AppendLine($"- Main capsule: {r.capsuleBottom:0.000} to {r.capsuleTop:0.000} m, radius {r.capsuleRadius:0.000} m");
+            if (r.hitboxes > 0)
+                sb.AppendLine($"- Hitboxes: {r.hitboxes}, holding {r.hitboxCoverage:P0} of the head and torso");
             sb.AppendLine();
             sb.AppendLine("Soles are the lower foot's lowest point. Deepest is the worst moment of the clip, highest the");
             sb.AppendLine("best (above zero on a run = both feet off the ground). poses.png shows each clip at its deepest.");
