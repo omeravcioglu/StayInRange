@@ -31,11 +31,10 @@ namespace CollarCali.EditorTools
     ///   5. Points the weapon equip points, the glide and arrow effects and the Player Head hook at the
     ///      sockets, and moves Malbers' bone attachments (attack triggers, holsters, footstep triggers,
     ///      carry point) from where they sat on Steve to the same place on this body.
-    ///   6. Puts the camera target at the profile's height, standing and crouched.
-    ///   7. Adds ThirdPersonJumpTuning, CharacterBodyCalibration, CharacterStateCalibration and
+    ///   6. Fits Malbers' look-at IK (the head follows the camera) to this model's neck and head bones.
+    ///   7. Puts the camera target at the profile's height, standing and crouched.
+    ///   8. Adds ThirdPersonJumpTuning, CharacterBodyCalibration, CharacterStateCalibration and
     ///      CharacterVisualInterpolator to the root.
-    /// Malbers' look-at IK is left unassigned: its axis offsets are for Steve's bones and would twist
-    /// this model's neck.
     /// </summary>
     public static class PlayerCharacterBuilder
     {
@@ -122,6 +121,7 @@ namespace CollarCali.EditorTools
                 Calibrate(root, profile, visual.transform.parent, sb);
                 Repoint(root, profile, sockets, sb);
                 RetargetAttachments(root.transform, bones, sb);
+                LookAt(root, avatar, bones, sb);
                 CameraTarget(root.transform, profile, sb);
                 Components(root, profile, visual.transform, sb);
 
@@ -687,7 +687,118 @@ namespace CollarCali.EditorTools
 
         static float Round(float value) => float.IsNaN(value) || float.IsInfinity(value) ? 1f : Mathf.Round(value * 1000f) / 1000f;
 
-        // ---- 6. Camera target -----------------------------------------------------------------------
+        // ---- 6. Look-at IK ---------------------------------------------------------------------------
+
+        /// <summary>
+        /// Malbers' IK manager turns the neck and head toward where the camera looks (set "Look At")
+        /// and, with the camera in front, toward the camera (set "Look At Camera"). Each look-at turns
+        /// its bone to LookRotation(aim) x Offset, where Offset is the turn from the bone's own axes to
+        /// the way the face points - and Malbers' offsets are for Steve's bones.
+        ///
+        /// Here each one gets that turn for this model's bones, from the avatar's T-pose, in which the
+        /// head looks straight ahead: the bone's rotation against the character there. The camera set's
+        /// is the same turned half round, as Malbers' is. Its Neck and Head targets are set to the
+        /// avatar's own Neck and Head bones: Malbers fills empty ones by name whenever the prefab is
+        /// saved, and had put this model's bones under Steve's offsets, the head turned on its side.
+        /// </summary>
+        static void LookAt(GameObject root, Avatar avatar, Dictionary<HumanBodyBones, Transform> bones, StringBuilder sb)
+        {
+            var ik = FindComponent(root, "IKManager");
+            if (ik == null)
+            {
+                sb.AppendLine("  ! No IK manager: the look-at was left as it is.");
+                return;
+            }
+
+            bones.TryGetValue(HumanBodyBones.Neck, out var neck);
+            bones.TryGetValue(HumanBodyBones.Head, out var head);
+            Transform BoneFor(Object tag)
+            {
+                string name = tag != null ? tag.name.ToLowerInvariant() : "";
+                return name.Contains("head") ? head : name.Contains("neck") ? neck : null;
+            }
+
+            var so = new SerializedObject(ik);
+            int targets = 0, offsets = 0;
+
+            var globals = so.FindProperty("GlobalTargets");
+            for (int i = 0; globals != null && i < globals.arraySize; i++)
+            {
+                var entry = globals.GetArrayElementAtIndex(i);
+                var bone = BoneFor(entry.FindPropertyRelative("ID")?.objectReferenceValue);
+                var useConstant = entry.FindPropertyRelative("Value.UseConstant");
+                var constant = entry.FindPropertyRelative("Value.ConstantValue");
+                if (bone == null || useConstant == null || constant == null)
+                    continue;
+                useConstant.boolValue = true;
+                constant.objectReferenceValue = bone;
+                targets++;
+            }
+
+            var turnRound = Quaternion.Euler(0f, 180f, 0f);
+            var sets = so.FindProperty("sets");
+            for (int s = 0; sets != null && s < sets.arraySize; s++)
+            {
+                var set = sets.GetArrayElementAtIndex(s);
+                string setName = set.FindPropertyRelative("name.ConstantValue")?.stringValue ?? "";
+                bool facesCamera = setName.IndexOf("camera", StringComparison.OrdinalIgnoreCase) >= 0;
+                var processors = set.FindPropertyRelative("IKProcesors");
+                for (int p = 0; processors != null && p < processors.arraySize; p++)
+                {
+                    var processor = processors.GetArrayElementAtIndex(p);
+                    if (!processor.managedReferenceFullTypename.EndsWith("IKGenericLookAt", StringComparison.Ordinal))
+                        continue;
+
+                    var bone = BoneFor(processor.FindPropertyRelative("Tag")?.objectReferenceValue);
+                    var offset = processor.FindPropertyRelative("Offset");
+                    if (bone == null || offset == null)
+                        continue;
+
+                    var straight = TPoseRotation(root.transform, bone, avatar);
+                    offset.vector3Value = Rounded((facesCamera ? turnRound * straight : straight).eulerAngles);
+                    offsets++;
+                }
+            }
+
+            so.ApplyModifiedPropertiesWithoutUndo();
+            sb.AppendLine($"  Look-at IK: {targets} targets on the neck and head, {offsets} offsets for this model's bones.");
+        }
+
+        /// <summary>
+        /// The bone's rotation against the character root in the avatar's T-pose. Bones take their
+        /// T-pose rotations; the objects above the model (Rotator, ModelOffset, the model's root) keep
+        /// their own.
+        /// </summary>
+        public static Quaternion TPoseRotation(Transform root, Transform bone, Avatar avatar)
+        {
+            var tpose = new Dictionary<string, Quaternion>();
+            foreach (var b in avatar.humanDescription.skeleton)
+                tpose.TryAdd(b.name, b.rotation);
+
+            var chain = new List<Transform>();
+            for (var t = bone; t != null && t != root; t = t.parent)
+                chain.Add(t);
+            chain.Reverse();
+
+            var rotation = Quaternion.identity;
+            foreach (var t in chain)
+                rotation *= tpose.TryGetValue(t.name, out var r) ? r : t.localRotation;
+            return rotation;
+        }
+
+        /// <summary>Angles to a thousandth of a degree, so a rebuild writes the same numbers.</summary>
+        static Vector3 Rounded(Vector3 angles)
+        {
+            static float R(float a)
+            {
+                a = Mathf.Round(a * 1000f) / 1000f;
+                return a >= 360f ? a - 360f : a;
+            }
+
+            return new Vector3(R(angles.x), R(angles.y), R(angles.z));
+        }
+
+        // ---- 7. Camera target -----------------------------------------------------------------------
 
         /// <summary>
         /// Malbers' AnimalTracker eases the camera target (CM Main Target) to a height per stance,
@@ -733,7 +844,7 @@ namespace CollarCali.EditorTools
             sb.AppendLine($"  Camera target {profile.cameraRig.targetHeight} m; tracked heights: {string.Join(", ", heights)}.");
         }
 
-        // ---- 7. Team components ---------------------------------------------------------------------
+        // ---- 8. Team components ---------------------------------------------------------------------
 
         static void Components(GameObject root, CharacterBodyProfile profile, Transform visual, StringBuilder sb)
         {

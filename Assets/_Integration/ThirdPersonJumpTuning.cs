@@ -122,6 +122,12 @@ namespace CollarCali
         /// <summary>
         /// Finds this character's states. Only ever its own runtime copies: if Malbers were set not to
         /// clone them, writing to them would rewrite the shared assets every character uses.
+        ///
+        /// Malbers makes those copies when the character wakes up, and until then its list holds the
+        /// shared assets themselves. On a prefab this component wakes up first, so a state is taken only
+        /// once Malbers has given it to this character; one taken before (or since replaced) is dropped,
+        /// with everything worked out from it. Holding the shared jump muted the take-off cue while the
+        /// character's own jump still waited for it: a standing jump rose on its animation and hung there.
         /// </summary>
         bool Resolve()
         {
@@ -141,10 +147,13 @@ namespace CollarCali
                 return false;
             }
 
+            if (!Mine(_jump) || !Mine(_fall))
+                Forget();
+
             if (_jump == null)
-                _jump = _animal.State_Get<JumpBasic>();
+                _jump = Own(_animal.State_Get<JumpBasic>());
             if (_fall == null)
-                _fall = _animal.State_Get<Fall>();
+                _fall = Own(_animal.State_Get<Fall>());
 
             if (_jump != null && _shippedWait == null)
             {
@@ -154,6 +163,24 @@ namespace CollarCali
             }
 
             return _jump != null || _fall != null;
+        }
+
+        /// <summary>The state, if Malbers has made it this character's own copy; otherwise null.</summary>
+        T Own<T>(T state) where T : State => state != null && state.animal == _animal ? state : null;
+
+        /// <summary>True when nothing is held, or what is held is still this character's own live copy.</summary>
+        bool Mine(State held) => ReferenceEquals(held, null) || (held != null && held.animal == _animal);
+
+        /// <summary>Lets go of the states and of the take-off and arc worked out from them.</summary>
+        void Forget()
+        {
+            UnmuteTakeoffCues();
+            _instantTakeoff = false;
+            _wasJumping = false;
+            _jump = null;
+            _fall = null;
+            _shippedWait = null;
+            _hasApplied = false;
         }
 
         #region Take-off

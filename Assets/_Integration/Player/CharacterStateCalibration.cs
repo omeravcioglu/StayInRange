@@ -78,10 +78,11 @@ namespace CollarCali
                 return false;
             }
 
-            _climb = _animal.State_Get<Climb>();
-            _ledge = _animal.State_Get<LedgeGrab>();
-            _wallRun = _animal.State_Get<WallRun>();
-            _wallRunVertical = _animal.State_Get<WallRunVertical>();
+            // Until Malbers has woken the character up, its list holds the shared state assets.
+            _climb = Own(_animal.State_Get<Climb>());
+            _ledge = Own(_animal.State_Get<LedgeGrab>());
+            _wallRun = Own(_animal.State_Get<WallRun>());
+            _wallRunVertical = Own(_animal.State_Get<WallRunVertical>());
             if (_climb == null && _ledge == null && _wallRun == null && _wallRunVertical == null)
                 return false; // MAnimal has not woken up yet
 
@@ -135,6 +136,9 @@ namespace CollarCali
                 _wallRunVertical.WallLayer = Local(_wallRunVertical.WallLayer, surfaces);
             }
         }
+
+        /// <summary>The state, if Malbers has made it this character's own copy; otherwise null.</summary>
+        T Own<T>(T state) where T : State => state != null && state.animal == _animal ? state : null;
 
         static Vector3 Raised(Vector3 steve, float scale) => new Vector3(steve.x, steve.y * scale, steve.z);
 

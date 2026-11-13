@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
+using CollarCali.Diagnostics;
 using MalbersAnimations.Controller;
 using MalbersAnimations.IK;
 using UnityEditor;
@@ -13,6 +14,12 @@ using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 using Object = UnityEngine.Object;
+// Game Creator has its own State and Character: aliases keep Malbers' names plain here.
+using GC2Character = GameCreator.Runtime.Characters.Character;
+using MeleePhase = GameCreator.Runtime.Melee.MeleePhase;
+using MeleeSkill = GameCreator.Runtime.Melee.Skill;
+using MeleeStance = GameCreator.Runtime.Melee.MeleeStance;
+using MeleeWeapon = GameCreator.Runtime.Melee.MeleeWeapon;
 
 namespace CollarCali.EditorTools
 {
@@ -23,9 +30,12 @@ namespace CollarCali.EditorTools
     /// It stands still, then jumps on the spot, jumps while walking and double-jumps, pressing Jump
     /// through the same hook as the key. For each jump it notes the take-off, the highest point and
     /// the landing, and a jump that has not landed after five seconds is reported as stuck, with the
-    /// state the character is in. While standing it measures where the head faces against the body and
-    /// the camera (the face direction comes from the avatar's T-pose), and it lists every camera tagged
-    /// MainCamera, since Malbers steers and aims by the first one it finds.
+    /// state the character is in. It checks that a tuning component holds the character's own copies of
+    /// Malbers' states. While standing it measures where the head faces (the face direction comes from
+    /// the avatar's T-pose) with the camera behind, with the body turned 40 degrees from the camera - the
+    /// head should keep looking where the camera looks - and with the camera in front, when it should
+    /// look at the camera. It lists every camera tagged MainCamera, since Malbers steers and aims by the
+    /// first one it finds.
     ///
     /// Batch (the Editor must be closed):
     ///   Unity -batchmode -projectPath . -executeMethod CollarCali.EditorTools.CharacterLiveCheck.RunBatch
@@ -36,7 +46,7 @@ namespace CollarCali.EditorTools
     /// Reports land in Builds/CharacterFit/&lt;timestamp&gt;-live-&lt;name&gt;: live.md and live.csv.
     /// </summary>
     [InitializeOnLoad]
-    public static class CharacterLiveCheck
+    public static partial class CharacterLiveCheck
     {
         const string JobKey = "CollarCali.LiveCheck.Job";
         const string MenuRoot = "Tools/CollarCali/Character/";
@@ -45,6 +55,9 @@ namespace CollarCali.EditorTools
 
         /// <summary>A jump that has not landed this long after the press is stuck.</summary>
         const float StuckSeconds = 5f;
+
+        /// <summary>How far the face may point from where the look-at should turn it, on average (degrees).</summary>
+        const float HeadOffLimit = 25f;
 
         /// <summary>Gives up on play mode altogether after this long (real seconds).</summary>
         const double WatchdogSeconds = 180;
@@ -170,7 +183,7 @@ namespace CollarCali.EditorTools
 
             var floor = GameObject.CreatePrimitive(PrimitiveType.Cube);
             floor.name = "Floor";
-            floor.transform.localScale = new Vector3(80f, 1f, 80f);
+            floor.transform.localScale = new Vector3(200f, 1f, 200f);
             floor.transform.position = new Vector3(0f, -0.5f, 0f);
 
             PrefabUtility.InstantiatePrefab(player);
@@ -235,9 +248,12 @@ namespace CollarCali.EditorTools
         }
 
         /// <summary>Drives the character one Editor frame at a time and writes down what it does.</summary>
-        class Probe
+        partial class Probe
         {
-            enum Phase { Find, Settle, Stand, JumpStill, Rest1, WalkJump, Rest2, DoubleJump, Done }
+            enum Phase { Find, Settle, Stand, LookAside, FaceCamera, JumpStill, Rest1, WalkJump, Rest2, DoubleJump, Attack, MalbersMode, Melee, Done }
+
+            /// <summary>How far the body is turned from the camera to see the head follow it (degrees).</summary>
+            const float AsideAngle = 40f;
 
             const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
 
@@ -259,6 +275,9 @@ namespace CollarCali.EditorTools
             readonly List<string> _failures = new List<string>();
             readonly List<JumpResult> _jumps = new List<JumpResult>();
             readonly List<Vector4> _headStanding = new List<Vector4>();
+            readonly List<Vector4> _headFacing = new List<Vector4>();
+            readonly List<Vector4> _headAside = new List<Vector4>();
+            Quaternion _turnedFrom;
 
             Phase _phase = Phase.Find;
             float _phaseStart;
@@ -279,18 +298,72 @@ namespace CollarCali.EditorTools
                 public float pressedAt, startY, apexY, landedAt = -1f;
                 public bool tookOff;
                 public string endState, stuckDetail;
+                public int takeoffCuesAtStart, takeoffCues = -1;
+            }
+
+            /// <summary>The animation's own take-off message (muted by the jump tuning's instant take-off).</summary>
+            const string TakeoffCue = "ActivateJump";
+
+            AnimatorTrafficProbe _traffic;
+
+            // Game Creator melee, on the spike's player only.
+            GC2Character _gc2;
+            CollarCali.Combat.MAnimalGC2Bridge _bridge;
+            MeleeStance _stance;
+            MeleeWeapon _weapon;
+            MeleeSkill _skill;
+            Transform _hand;
+            readonly List<Vector3> _handIdle = new List<Vector3>();
+            AttackResult _attack;
+
+            // Walking: how far 1.2 s of forward input carries the body (root motion).
+            Vector3 _walkStart;
+            float _walked = -1f;
+
+            // One of Malbers' own modes (its fist attack), which must still start and finish.
+            Mode _mode;
+            float _modeStartedAt = -1f, _modeTook = -1f, _modeHandReach;
+            bool _modeStarted, _modeSeenPlaying;
+
+            class AttackResult
+            {
+                public string skill;
+                public float startedAt, endedAt = -1f;
+                public readonly List<string> phases = new List<string>();
+                public float handReach, handIdleSpread, lunge;
+                public Vector3 startPosition;
+                public readonly HashSet<string> malbersStates = new HashSet<string>();
+                public string error;
             }
 
             public bool Failed => _failures.Count > 0;
+
+            // Warnings and errors logged while the check plays, by text (first line), with counts.
+            readonly Dictionary<string, int> _log = new Dictionary<string, int>();
+            int _logErrors, _logWarnings;
+
+            void OnLog(string message, string stack, LogType type)
+            {
+                if (type == LogType.Log)
+                    return;
+                string line = (message ?? "").Split('\n')[0].Trim();
+                if (line.StartsWith("[LiveCheck]", StringComparison.Ordinal))
+                    return;
+                if (type == LogType.Warning) _logWarnings++; else _logErrors++;
+                string key = (type == LogType.Warning ? "warning: " : "error: ") + (line.Length > 160 ? line.Substring(0, 160) : line);
+                _log[key] = (_log.TryGetValue(key, out int n) ? n : 0) + 1;
+            }
 
             public Probe(Job job)
             {
                 _job = job;
                 // The Editor otherwise runs flat out in batch mode; a 144 Hz screen is what players see.
                 QualitySettings.vSyncCount = 0;
+                Application.logMessageReceived += OnLog;
                 Application.targetFrameRate = 144;
                 _csv.AppendLine("time,phase,state,grounded,height,velocityY,useGravity,headYaw,headPitch,headRoll,headToCamera," +
-                                "animState,animTag,animTime,inTransition,jumpProfile,jumpLogic,jumpLogicTime,jumpTime,inCore");
+                                "animState,animTag,animTime,inTransition,jumpProfile,jumpLogic,jumpLogicTime,jumpTime,inCore," +
+                                "handX,handY,handZ,meleePhase,gestureWeight,outputWeight");
             }
 
             float Now => Time.time;
@@ -350,6 +423,31 @@ namespace CollarCali.EditorTools
                     case Phase.Stand:
                         if (InPhase > 2f)
                         {
+                            // The body turned a little away from the camera, which keeps its own direction:
+                            // the head should keep looking where the camera looks.
+                            var t = _animal.transform;
+                            _turnedFrom = t.rotation;
+                            t.rotation = Quaternion.AngleAxis(AsideAngle, t.up) * t.rotation;
+                            Enter(Phase.LookAside);
+                        }
+
+                        break;
+
+                    case Phase.LookAside:
+                        if (InPhase > 2f)
+                        {
+                            // Turned to face the camera: Malbers' "Look At Camera" should turn the head to it.
+                            var t = _animal.transform;
+                            t.rotation = Quaternion.AngleAxis(180f, t.up) * _turnedFrom;
+                            Enter(Phase.FaceCamera);
+                        }
+
+                        break;
+
+                    case Phase.FaceCamera:
+                        if (InPhase > 2f)
+                        {
+                            _animal.transform.rotation = _turnedFrom;
                             StartJump("Jump standing still");
                             Enter(Phase.JumpStill);
                         }
@@ -365,21 +463,25 @@ namespace CollarCali.EditorTools
                     case Phase.Rest1:
                         if (InPhase > 0.6f)
                         {
-                            _animal.SetInputAxis(new Vector3(0f, 0f, 1f));
+                            Move(new Vector3(0f, 0f, 1f));
+                            _walkStart = _animal.transform.position;
                             Enter(Phase.WalkJump);
                         }
 
                         break;
 
                     case Phase.WalkJump:
-                        if (_jump == null && InPhase > 1.2f)
+                        if (_jump == null && _walked < 0f && InPhase > 1.2f)
+                        {
+                            _walked = Vector3.ProjectOnPlane(_animal.transform.position - _walkStart, Vector3.up).magnitude;
                             StartJump("Jump while walking");
+                        }
                         if (_jump != null)
                         {
                             ReleaseAfter(0.15f);
                             if (WatchJump())
                             {
-                                _animal.SetInputAxis(Vector3.zero);
+                                Move(Vector3.zero);
                                 Enter(Phase.Rest2);
                             }
                         }
@@ -401,14 +503,49 @@ namespace CollarCali.EditorTools
                         if (!_held && InPhase > 0.35f && InPhase < 0.5f)
                             Press(true);
                         if (WatchJump())
+                            Enter(_gc2 != null ? Phase.Attack : Phase.MalbersMode);
+                        break;
+
+                    case Phase.Attack:
+                        if (_attack == null && InPhase > 0.6f)
+                            StartAttack();
+                        if (_attack != null && WatchAttack())
+                            Enter(Phase.MalbersMode);
+                        break;
+
+                    case Phase.MalbersMode:
+                        if (InPhase > 0.6f && WatchMalbersMode())
+                            Enter(_gc2 != null && _bridge != null ? Phase.Melee : Phase.Done);
+                        break;
+
+                    case Phase.Melee:
+                        if (StepMelee())
                             Enter(Phase.Done);
                         break;
 
                     case Phase.Done:
+                        JudgeHead();
+                        JudgeAnimator();
+                        JudgeMelee();
                         return true;
                 }
 
                 return false;
+            }
+
+            /// <summary>A twisted head is off by about 90 degrees; Steve's own look is within 7.</summary>
+            void JudgeHead()
+            {
+                void Judge(string label, List<Vector4> samples)
+                {
+                    if (samples.Count > 0 && samples.Average(v => v.w) > HeadOffLimit)
+                        _failures.Add($"Head with the {label}: the face is {samples.Average(v => v.w):0} degrees off " +
+                                      $"where it should look (limit {HeadOffLimit:0}).");
+                }
+
+                Judge("camera behind", _headStanding);
+                Judge($"body turned {AsideAngle:0} degrees from the camera", _headAside);
+                Judge("camera in front", _headFacing);
             }
 
             bool FindPlayer()
@@ -459,6 +596,23 @@ namespace CollarCali.EditorTools
 
                 _stateNames = AnimatorNames(_animal.Anim, out _tagNames);
 
+                // Before the first jump: Malbers' behaviours look for listeners the first time they run.
+                _traffic = _animal.GetComponent<AnimatorTrafficProbe>();
+                if (_traffic == null)
+                    _traffic = _animal.gameObject.AddComponent<AnimatorTrafficProbe>();
+
+                _hand = _animal.Anim.GetBoneTransform(HumanBodyBones.RightHand);
+                _gc2 = _animal.GetComponent<GC2Character>();
+                if (_gc2 != null)
+                {
+                    _weapon = FindAsset<MeleeWeapon>("Brawl_Weapon");
+                    _skill = FindAsset<MeleeSkill>("Brawl@Combo1");
+                    var bridge = _bridge = _animal.GetComponent<CollarCali.Combat.MAnimalGC2Bridge>();
+                    _notes.Add("Game Creator Character on the player (" + _gc2.Kernel.Animim?.GetType().Name + "); " +
+                               $"its animation graph {(_gc2.AnimationGraph.IsValid() ? "drives" : "does not drive")} the Animator " +
+                               $"(update mode {_animal.Anim.updateMode}); wiring: {(bridge != null ? bridge.WiringReport : "no bridge")}.");
+                }
+
                 _jumpState = _animal.states.FirstOrDefault(s => s != null && s.Input == "Jump" && s is JumpBasic) ??
                              _animal.states.FirstOrDefault(s => s != null && s.Input == "Jump");
                 if (_jumpState == null)
@@ -492,19 +646,7 @@ namespace CollarCali.EditorTools
                 if (_head == null || anim.avatar == null)
                     return;
 
-                var tpose = new Dictionary<string, Quaternion>();
-                foreach (var bone in anim.avatar.humanDescription.skeleton)
-                    tpose[bone.name] = bone.rotation;
-
-                var chain = new List<Transform>();
-                for (var t = _head; t != null && t != _animal.transform; t = t.parent)
-                    chain.Add(t);
-                chain.Reverse();
-
-                var rotation = Quaternion.identity;
-                foreach (var t in chain)
-                    rotation *= tpose.TryGetValue(t.name, out var r) ? r : t.localRotation;
-
+                var rotation = PlayerCharacterBuilder.TPoseRotation(_animal.transform, _head, anim.avatar);
                 _faceLocal = Quaternion.Inverse(rotation) * Vector3.forward;
                 _upLocal = Quaternion.Inverse(rotation) * Vector3.up;
             }
@@ -568,6 +710,7 @@ namespace CollarCali.EditorTools
                     pressedAt = Now,
                     startY = _animal.transform.position.y,
                     apexY = _animal.transform.position.y,
+                    takeoffCuesAtStart = _traffic != null ? _traffic.Count(TakeoffCue) : 0,
                 };
                 _jumps.Add(_jump);
                 Press(true);
@@ -586,6 +729,191 @@ namespace CollarCali.EditorTools
                     Press(false);
             }
 
+            /// <summary>
+            /// Pushes the stick: Malbers' input link hands its own move axis to the character every
+            /// frame, so that is the one to set (the character's own is set too, for a character without one).
+            /// </summary>
+            void Move(Vector3 axis)
+            {
+                var link = _animal.GetComponent<MalbersAnimations.InputSystem.MInputLink>();
+                if (link != null)
+                    link.MoveAxis = axis;
+                _animal.SetInputAxis(axis);
+            }
+
+            /// <summary>Plays one Game Creator melee skill, the way a key press would end up doing.</summary>
+            void StartAttack()
+            {
+                _attack = new AttackResult
+                {
+                    skill = _skill != null ? _skill.name : "none",
+                    startedAt = Now,
+                    startPosition = _animal.transform.position,
+                };
+
+                if (_weapon == null || _skill == null)
+                {
+                    _attack.error = "Brawl_Weapon or Brawl@Combo1 was not found in the project.";
+                    return;
+                }
+
+                try
+                {
+                    _stance = _gc2.Combat.RequestStance<MeleeStance>();
+                    _stance.PlaySkill(_weapon, _skill, null);
+                }
+                catch (Exception e)
+                {
+                    _attack.error = e.GetType().Name + ": " + e.Message;
+                }
+            }
+
+            /// <summary>Follows the attack; true once Game Creator says it is over, or after 5 s.</summary>
+            bool WatchAttack()
+            {
+                if (_attack.error != null)
+                {
+                    _failures.Add("Melee: " + _attack.error);
+                    _attack.endedAt = 0f;
+                    return true;
+                }
+
+                string phase = _stance != null ? _stance.CurrentPhase.ToString() : "none";
+                if (_attack.phases.Count == 0 || _attack.phases[_attack.phases.Count - 1] != phase)
+                    _attack.phases.Add(phase);
+                _attack.malbersStates.Add(StateName());
+
+                if (_hand != null && _handIdle.Count > 0)
+                {
+                    var local = _animal.transform.InverseTransformPoint(_hand.position);
+                    _attack.handReach = Mathf.Max(_attack.handReach, (local - Mean(_handIdle)).magnitude);
+                }
+
+                var moved = Vector3.ProjectOnPlane(_animal.transform.position - _attack.startPosition, Vector3.up);
+                _attack.lunge = Mathf.Max(_attack.lunge, moved.magnitude);
+
+                float since = Now - _attack.startedAt;
+                bool over = since > 0.2f && _stance != null && _stance.CurrentPhase == MeleePhase.None;
+                if (!over && since <= 5f)
+                    return false;
+
+                _attack.endedAt = since;
+                if (!over)
+                    _failures.Add($"Melee: {_attack.skill} is still in {phase} 5 s after it started.");
+                if (_handIdle.Count > 0)
+                {
+                    var mean = Mean(_handIdle);
+                    _attack.handIdleSpread = _handIdle.Max(p => (p - mean).magnitude);
+                }
+
+                return true;
+            }
+
+            /// <summary>
+            /// Plays Malbers' own fist attack (the mode on its Attack1 input) and follows it; true once it
+            /// has finished, or after 4 s. Game Creator's graph makes its own copy of the Animator
+            /// Controller after Malbers has set up its mode behaviours, so this checks they still work.
+            /// </summary>
+            bool WatchMalbersMode()
+            {
+                if (!_modeStarted)
+                {
+                    _modeStarted = true;
+                    _mode = _animal.modes.FirstOrDefault(m => m != null && m.ID != null && m.Input == "Attack1") ??
+                            _animal.modes.FirstOrDefault(m => m != null && m.ID != null && m.ID.name.Contains("Attack"));
+                    if (_mode == null)
+                    {
+                        _notes.Add("No Malbers attack mode on this character to try.");
+                        return true;
+                    }
+
+                    _modeStartedAt = Now;
+                    if (!_animal.Mode_TryActivate(_mode.ID.ID))
+                    {
+                        _failures.Add($"Malbers' mode {_mode.ID.name} would not start.");
+                        return true;
+                    }
+
+                    return false;
+                }
+
+                if (_animal.IsPlayingMode)
+                    _modeSeenPlaying = true;
+                if (_hand != null && _handIdle.Count > 0)
+                {
+                    var local = _animal.transform.InverseTransformPoint(_hand.position);
+                    _modeHandReach = Mathf.Max(_modeHandReach, (local - Mean(_handIdle)).magnitude);
+                }
+
+                float since = Now - _modeStartedAt;
+                if (_modeSeenPlaying && !_animal.IsPlayingMode && since > 0.2f)
+                {
+                    _modeTook = since;
+                    return true;
+                }
+
+                if (since > 4f)
+                {
+                    _failures.Add(_modeSeenPlaying
+                        ? $"Malbers' mode {_mode.ID.name} was still playing 4 s after it started."
+                        : $"Malbers' mode {_mode.ID.name} never played.");
+                    return true;
+                }
+
+                return false;
+            }
+
+            static Vector3 Mean(List<Vector3> points)
+            {
+                var sum = Vector3.zero;
+                foreach (var p in points)
+                    sum += p;
+                return points.Count > 0 ? sum / points.Count : Vector3.zero;
+            }
+
+            static T FindAsset<T>(string name) where T : Object
+            {
+                foreach (string guid in AssetDatabase.FindAssets(name + " t:" + typeof(T).Name))
+                {
+                    var asset = AssetDatabase.LoadAssetAtPath<T>(AssetDatabase.GUIDToAssetPath(guid));
+                    if (asset != null && asset.name == name)
+                        return asset;
+                }
+
+                return null;
+            }
+
+            /// <summary>
+            /// Malbers' animation behaviours and root motion must run once, inside the physics step: a
+            /// second copy of the Animator Controller, or an Animator moved off the physics step, shows
+            /// here first.
+            /// </summary>
+            void JudgeAnimator()
+            {
+                if (_traffic == null)
+                    return;
+
+                int outside = _traffic.AnimatorMoves - _traffic.AnimatorMovesInPhysics;
+                if (outside > 0)
+                    _failures.Add($"The Animator moved the body outside the physics step {outside} times " +
+                                  $"(of {_traffic.AnimatorMoves}): Malbers moves it in the physics step only.");
+                if (_traffic.MostMovesInOneStep > 1)
+                    _failures.Add($"The Animator moved the body {_traffic.MostMovesInOneStep} times in one physics step.");
+
+                var tuning = _animal.GetComponent<ThirdPersonJumpTuning>();
+                bool instant = tuning != null && tuning.isActiveAndEnabled && PlayerTuning.Active.thirdPersonJump.instantTakeoff;
+                foreach (var jump in _jumps)
+                {
+                    if (jump.name == "Double jump" || jump.takeoffCues < 0)
+                        continue;
+                    int expected = instant ? 0 : 1;
+                    if (jump.takeoffCues != expected)
+                        _failures.Add($"{jump.name}: the animation's take-off cue reached the character {jump.takeoffCues} " +
+                                      $"times, not {expected}" + (instant ? " (the jump tuning mutes it)" : "") +
+                                      ": Malbers' animation behaviours ran more than once.");
+                }
+            }
+
             /// <summary>Follows the current jump; true once it has landed or is judged stuck.</summary>
             bool WatchJump()
             {
@@ -602,6 +930,7 @@ namespace CollarCali.EditorTools
                 {
                     _jump.landedAt = since;
                     _jump.endState = StateName();
+                    _jump.takeoffCues = _traffic != null ? _traffic.Count(TakeoffCue) - _jump.takeoffCuesAtStart : -1;
                     _jump = null;
                     return true;
                 }
@@ -610,6 +939,7 @@ namespace CollarCali.EditorTools
                 {
                     var rb = _animal.RB;
                     _jump.endState = StateName();
+                    _jump.takeoffCues = _traffic != null ? _traffic.Count(TakeoffCue) - _jump.takeoffCuesAtStart : -1;
                     _jump.stuckDetail = $"{since:0.0} s after the press it is in {StateName()}, grounded " +
                                         $"{_animal.Grounded}, {(y - _groundY):+0.00;-0.00} m off the ground, " +
                                         $"vertical speed {(rb != null ? rb.linearVelocity.y : 0f):0.00} m/s, " +
@@ -633,9 +963,15 @@ namespace CollarCali.EditorTools
                     _lastState = state;
                 }
 
-                var head = HeadAngles();
+                var head = HeadAngles(towardCamera: false);
                 if (_phase == Phase.Stand && InPhase > 0.5f && head.HasValue)
                     _headStanding.Add(head.Value);
+                if (_phase == Phase.Stand && InPhase > 0.5f && _hand != null)
+                    _handIdle.Add(_animal.transform.InverseTransformPoint(_hand.position));
+                if (_phase == Phase.LookAside && InPhase > 0.8f && head.HasValue)
+                    _headAside.Add(head.Value);
+                if (_phase == Phase.FaceCamera && InPhase > 0.8f && HeadAngles(towardCamera: true) is Vector4 facing)
+                    _headFacing.Add(facing);
 
                 var rb = _animal.RB;
                 _csv.Append(F(Now - _firstTime)).Append(',').Append(_phase).Append(',').Append(state).Append(',')
@@ -676,6 +1012,17 @@ namespace CollarCali.EditorTools
                         .Append(jumpTime is float t ? F(t) : "").Append(',')
                         .Append(jump.InCoreAnimation ? 1 : 0);
                 }
+                else
+                {
+                    _csv.Append(",,,,,");
+                }
+
+                // The right hand in the body's space, and Game Creator's melee phase and gesture weight.
+                var hand = _hand != null ? _animal.transform.InverseTransformPoint(_hand.position) : Vector3.zero;
+                _csv.Append(',').Append(F(hand.x)).Append(',').Append(F(hand.y)).Append(',').Append(F(hand.z)).Append(',')
+                    .Append(_stance != null ? _stance.CurrentPhase.ToString() : "").Append(',')
+                    .Append(_gc2 != null && _gc2.Gestures != null ? F(_gc2.Gestures.CurrentWeight) : "").Append(',')
+                    .Append(_bridge != null ? F(_bridge.OverlayWeight) : "");
 
                 _csv.AppendLine();
             }
@@ -685,9 +1032,10 @@ namespace CollarCali.EditorTools
 
             /// <summary>
             /// Yaw (right +), pitch (down +) and roll of the face against the body, and the angle between
-            /// the face and the camera's forward. Null without a head.
+            /// the face and the camera's forward - or, <paramref name="towardCamera"/>, the direction to
+            /// the camera. Null without a head.
             /// </summary>
-            Vector4? HeadAngles()
+            Vector4? HeadAngles(bool towardCamera)
             {
                 if (_head == null)
                     return null;
@@ -705,12 +1053,16 @@ namespace CollarCali.EditorTools
                     : 0f;
 
                 var cam = Camera.main;
-                float toCamera = cam != null ? Vector3.Angle(_head.rotation * _faceLocal, cam.transform.forward) : -1f;
+                var worldFace = _head.rotation * _faceLocal;
+                float toCamera = cam == null ? -1f
+                    : towardCamera ? Vector3.Angle(worldFace, cam.transform.position - _head.position)
+                    : Vector3.Angle(worldFace, cam.transform.forward);
                 return new Vector4(yaw, pitch, roll, toCamera);
             }
 
             public string Write(string error)
             {
+                Application.logMessageReceived -= OnLog;
                 Directory.CreateDirectory(_job.folder);
                 File.WriteAllText(Path.Combine(_job.folder, "live.csv"), _csv.ToString());
 
@@ -744,31 +1096,73 @@ namespace CollarCali.EditorTools
                 }
 
                 md.AppendLine("## Jumps");
-                md.AppendLine("| Jump | Took off | Highest | Landed after | Ended in |");
-                md.AppendLine("|---|---|---|---|---|");
+                md.AppendLine("| Jump | Took off | Highest | Landed after | Ended in | Take-off cues |");
+                md.AppendLine("|---|---|---|---|---|---|");
                 foreach (var j in _jumps)
                     md.AppendLine($"| {j.name} | {(j.tookOff ? "yes" : "no")} | {(j.apexY - j.startY):+0.00} m | " +
                                   $"{(j.landedAt >= 0f ? j.landedAt.ToString("0.00") + " s" : "**not landed**")} | " +
-                                  $"{j.endState} |");
+                                  $"{j.endState} | {(j.takeoffCues >= 0 ? j.takeoffCues.ToString() : "-")} |");
                 md.AppendLine();
 
-                md.AppendLine("## Head while standing (camera behind)");
-                if (_headStanding.Count > 0)
+                if (_traffic != null)
                 {
-                    md.AppendLine("Degrees. Yaw: right +. Pitch: down +. Roll: against level. To camera: face against " +
-                                  "the camera's view direction.");
+                    md.AppendLine("## Animator");
+                    md.AppendLine($"- Root-motion callbacks: {_traffic.AnimatorMoves}, {_traffic.AnimatorMovesInPhysics} of them " +
+                                  $"inside a physics step; {_traffic.PhysicsSteps} physics steps, at most " +
+                                  $"{_traffic.MostMovesInOneStep} in one.");
+                    md.AppendLine("- Messages from Malbers' animation behaviours: " + (_traffic.Messages.Count == 0
+                        ? "none."
+                        : string.Join(", ", _traffic.Messages.OrderBy(m => m.Key).Select(m => $"{m.Key} x{m.Value}")) + "."));
                     md.AppendLine();
-                    md.AppendLine("| | Yaw | Pitch | Roll | To camera |");
-                    md.AppendLine("|---|---|---|---|---|");
-                    md.AppendLine("| average | " + Row(average: true) + " |");
-                    md.AppendLine("| widest | " + Row(average: false) + " |");
-                }
-                else
-                {
-                    md.AppendLine("No samples.");
                 }
 
+                if (_walked >= 0f)
+                {
+                    md.AppendLine("## Walking");
+                    md.AppendLine($"- 1.2 s of forward input carried the body {_walked:0.00} m.");
+                    md.AppendLine();
+                }
+
+                if (_mode != null)
+                {
+                    md.AppendLine("## Malbers mode");
+                    md.AppendLine($"- {_mode.ID.name}: {(_modeTook >= 0f ? "played and finished in " + _modeTook.ToString("0.00") + " s" : "did not finish")}, " +
+                                  $"right hand moved {_modeHandReach:0.00} m.");
+                    md.AppendLine();
+                }
+
+                if (_attack != null)
+                {
+                    md.AppendLine("## Melee (Game Creator)");
+                    md.AppendLine("| Skill | Phases | Right hand moved | Body moved | Malbers states | Took |");
+                    md.AppendLine("|---|---|---|---|---|---|");
+                    md.AppendLine($"| {_attack.skill} | {string.Join(" > ", _attack.phases)} | " +
+                                  $"{_attack.handReach:0.00} m (idle sway {_attack.handIdleSpread:0.00} m) | {_attack.lunge:0.00} m | " +
+                                  $"{string.Join(", ", _attack.malbersStates)} | " +
+                                  $"{(_attack.endedAt >= 0f ? _attack.endedAt.ToString("0.00") + " s" : "-")} |");
+                    md.AppendLine();
+                }
+
+                md.AppendLine("## Head");
+                md.AppendLine("Degrees, against the body. Yaw: right +. Pitch: down +. Roll: against level. Off: the " +
+                              "face against where it should look - the camera's view direction with the camera " +
+                              "behind or the body turned from it, the camera itself with the camera in front.");
                 md.AppendLine();
+                md.AppendLine("| | Yaw | Pitch | Roll | Off |");
+                md.AppendLine("|---|---|---|---|---|");
+                HeadRows(md, "camera behind", _headStanding);
+                HeadRows(md, $"body turned {AsideAngle:0}° from the camera", _headAside);
+                HeadRows(md, "camera in front", _headFacing);
+
+                md.AppendLine();
+                WriteMelee(md);
+
+                md.AppendLine("## Log");
+                md.AppendLine($"- {_logErrors} errors and {_logWarnings} warnings while playing" + (_log.Count > 0 ? "; the most frequent:" : "."));
+                foreach (var entry in _log.OrderByDescending(e => e.Value).Take(12))
+                    md.AppendLine($"  - x{entry.Value} {entry.Key}");
+                md.AppendLine();
+
                 md.AppendLine("## States");
                 md.AppendLine("```");
                 foreach (var line in _timeline)
@@ -780,16 +1174,25 @@ namespace CollarCali.EditorTools
                 return path;
             }
 
-            string Row(bool average)
+            static void HeadRows(StringBuilder md, string label, List<Vector4> samples)
             {
-                string Cell(Func<Vector4, float> c)
+                if (samples.Count == 0)
                 {
-                    var values = _headStanding.Select(c).ToList();
+                    md.AppendLine($"| {label} | no samples | | | |");
+                    return;
+                }
+
+                string Cell(Func<Vector4, float> c, bool average)
+                {
+                    var values = samples.Select(c).ToList();
                     float value = average ? values.Average() : values.OrderByDescending(x => Mathf.Abs(x)).First();
                     return value.ToString("0.0", CultureInfo.InvariantCulture);
                 }
 
-                return string.Join(" | ", Cell(v => v.x), Cell(v => v.y), Cell(v => v.z), Cell(v => v.w));
+                foreach (bool average in new[] { true, false })
+                    md.AppendLine($"| {label}, {(average ? "average" : "widest")} | " +
+                                  string.Join(" | ", Cell(v => v.x, average), Cell(v => v.y, average),
+                                      Cell(v => v.z, average), Cell(v => v.w, average)) + " |");
             }
 
             static string F(float v) => v.ToString("0.###", CultureInfo.InvariantCulture);
