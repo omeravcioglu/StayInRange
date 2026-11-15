@@ -90,6 +90,30 @@ namespace CollarCali.EditorTools
 
         static void Configure(GameObject root, StringBuilder sb)
         {
+            ConfigureGameCreator(root, sb);
+
+            // Spike input, to try the team sword in play mode: equip at start, swing on the left button.
+            var input = root.GetComponent<CollarCali.Spikes.GC2SpikeSwordInput>();
+            if (input == null)
+                input = root.AddComponent<CollarCali.Spikes.GC2SpikeSwordInput>();
+            var sword = AssetDatabase.LoadAssetAtPath<GameCreator.Runtime.Melee.MeleeWeapon>(MeleeContentBuilder.SwordWeaponPath);
+            var inputSo = new SerializedObject(input);
+            inputSo.FindProperty("m_Weapon").objectReferenceValue = sword;
+            inputSo.ApplyModifiedPropertiesWithoutUndo();
+            sb.AppendLine("  GC2SpikeSwordInput: " + (sword != null
+                ? "equips the team sword at start and swings it on the left mouse button."
+                : "no team sword yet - run Build Team Melee Content, then build this again."));
+        }
+
+        /// <summary>
+        /// Puts Game Creator 2 melee on a Malbers player: a Game Creator Character on the root whose
+        /// five units are the passive Malbers ones (the root Animator plays its gestures, the model is
+        /// its mannequin, its own footsteps are off), and MAnimalGC2Bridge. Shared by the spike player
+        /// and ThirdPersonPlayer.prefab. -gc2Wiring Stock|NoIKPass|SingleController|Overlay picks the
+        /// bridge's graph wiring for an experiment; otherwise it is kept.
+        /// </summary>
+        public static void ConfigureGameCreator(GameObject root, StringBuilder sb)
+        {
             var animator = root.GetComponent<Animator>();
             if (animator == null)
                 throw new InvalidOperationException("The player has no Animator on its root.");
@@ -143,18 +167,6 @@ namespace CollarCali.EditorTools
             sb.AppendLine($"  Game Creator Character on the root: player, {units} of 5 units replaced with the passive " +
                           $"Malbers ones; animator {animator.name}, mannequin {(visual != null ? visual.name : "none")}, " +
                           $"footsteps off. MAnimalGC2Bridge, graph wiring {bridge.Wiring}.");
-
-            // Spike input, to try the team sword in play mode: equip at start, swing on the left button.
-            var input = root.GetComponent<CollarCali.Spikes.GC2SpikeSwordInput>();
-            if (input == null)
-                input = root.AddComponent<CollarCali.Spikes.GC2SpikeSwordInput>();
-            var sword = AssetDatabase.LoadAssetAtPath<GameCreator.Runtime.Melee.MeleeWeapon>(MeleeContentBuilder.SwordWeaponPath);
-            var inputSo = new SerializedObject(input);
-            inputSo.FindProperty("m_Weapon").objectReferenceValue = sword;
-            inputSo.ApplyModifiedPropertiesWithoutUndo();
-            sb.AppendLine("  GC2SpikeSwordInput: " + (sword != null
-                ? "equips the team sword at start and swings it on the left mouse button."
-                : "no team sword yet - run Build Team Melee Content, then build this again."));
         }
 
         /// <summary>Puts a <typeparamref name="T"/> in the unit slot unless one is there. 1 if it changed.</summary>

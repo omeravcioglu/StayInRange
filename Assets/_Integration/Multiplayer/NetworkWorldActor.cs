@@ -839,7 +839,7 @@ namespace CollarCali
                 return false;
             return go.GetComponentInParent<PlayerNetworkBridge>() != null
                    || go.GetComponentInParent<PlayerMovement>() != null
-                   || go.GetComponentInParent<DualPlayerController>() != null
+                   || go.GetComponentInParent<IPlayerRig>() != null
                    || go.GetComponentInParent<MalbersAnimations.Controller.MAnimal>() != null
                    || go.GetComponentInParent<EmeraldSystem>() != null
                    || go.GetComponentInParent<CreepGrabEnemy>() != null;

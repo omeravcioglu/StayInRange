@@ -262,15 +262,14 @@ namespace CollarCali
             if (TryReadPlayerId(bridge, out playerId))
                 return true;
 
-            foreach (var dual in FindObjectsByType<DualPlayerController>(
-                         FindObjectsInactive.Include, FindObjectsSortMode.None))
+            // The local player's own body is not under its bridge (third person runs a detached
+            // character), but the bridge's controller knows it.
+            foreach (var owner in PlayerNetworkBridge.All)
             {
-                if (dual == null || !dual.OwnsCollider(other))
+                var rig = owner != null ? owner.Rig : null;
+                if (rig == null || !rig.OwnsCollider(other))
                     continue;
-
-                bridge = dual.GetComponent<PlayerNetworkBridge>()
-                         ?? dual.GetComponentInParent<PlayerNetworkBridge>();
-                if (TryReadPlayerId(bridge, out playerId))
+                if (TryReadPlayerId(owner, out playerId))
                     return true;
             }
 

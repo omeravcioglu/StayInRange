@@ -572,21 +572,27 @@ namespace CollarCali
                         others.Add(candidate);
                 }
 
-                foreach (var dual in FindObjectsByType<DualPlayerController>(FindObjectsSortMode.None))
+                // Third-person players: DualPlayerController's Steve, or a ThirdPersonPlayer.
+                void ConsiderRig(IPlayerRig rig)
                 {
-                    if (dual == null || !dual.IsThirdPerson || dual.Animal == null)
-                        continue;
-                    var root = dual.Animal.transform;
+                    if (!PlayerRigs.IsAlive(rig) || !rig.IsThirdPerson || rig.Animal == null)
+                        return;
+                    var root = rig.Animal.transform;
                     if (!root.gameObject.activeInHierarchy)
-                        continue;
+                        return;
                     if (FlatDistance(transform.position, root.position) > activateRadius)
-                        continue;
-                    var candidate = GrabVictim.FromSteve(dual);
+                        return;
+                    var candidate = GrabVictim.FromRig(rig);
                     if (_lastVictim != null && candidate.Root == _lastVictim)
                         last = candidate;
                     else
                         others.Add(candidate);
                 }
+
+                foreach (var dual in FindObjectsByType<DualPlayerController>(FindObjectsSortMode.None))
+                    ConsiderRig(dual);
+                foreach (var thirdPerson in FindObjectsByType<ThirdPersonPlayer>(FindObjectsSortMode.None))
+                    ConsiderRig(thirdPerson);
             }
 
             if (others.Count > 0)
@@ -955,7 +961,6 @@ namespace CollarCali
             PlayerControl _control;
             Rigidbody _rb;
             PlayerStats _stats;
-            DualPlayerController _dual;
             bool _wasKinematic;
             Transform _oldParent;
 
@@ -978,20 +983,20 @@ namespace CollarCali
                 };
             }
 
-            public static GrabVictim FromSteve(DualPlayerController dual)
+            public static GrabVictim FromRig(IPlayerRig rig)
             {
                 return new GrabVictim
                 {
-                    Root = dual.Animal.transform,
-                    _dual = dual
+                    Root = rig.Animal.transform
                 };
             }
 
             public static GrabVictim FromBridge(PlayerNetworkBridge bridge)
             {
                 Transform root = bridge.transform;
-                if (bridge.DualPlayer != null && bridge.DualPlayer.IsThirdPerson && bridge.DualPlayer.SteveRoot != null)
-                    root = bridge.DualPlayer.SteveRoot.transform;
+                var rig = bridge.Rig;
+                if (rig != null && rig.IsThirdPerson && rig.Body != null)
+                    root = rig.Body.transform;
                 else if (bridge.DualPlayer != null && bridge.DualPlayer.FpsBody != null)
                     root = bridge.DualPlayer.FpsBody;
 
@@ -1115,11 +1120,11 @@ namespace CollarCali
             if (other.isTrigger)
                 return false;
 
-            var dual = other.GetComponentInParent<DualPlayerController>();
-            if (dual != null && dual.IsThirdPerson && dual.Animal != null)
+            var rig = other.GetComponentInParent<IPlayerRig>();
+            if (rig != null && rig.IsThirdPerson && rig.Animal != null)
             {
-                if (dual.Animal.MainCollider != null)
-                    return other == dual.Animal.MainCollider;
+                if (rig.Animal.MainCollider != null)
+                    return other == rig.Animal.MainCollider;
                 return other.GetComponent<MAnimal>() != null;
             }
 

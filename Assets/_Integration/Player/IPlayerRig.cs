@@ -98,5 +98,11 @@ namespace CollarCali
         {
             Registered.Remove(rig);
         }
+
+        /// <summary>
+        /// False for null and for a rig whose component was destroyed. An interface reference skips
+        /// Unity's destroyed-object check, so a held reference can be non-null yet gone.
+        /// </summary>
+        public static bool IsAlive(IPlayerRig rig) => rig != null && !(rig is Object unityObject && unityObject == null);
     }
 }

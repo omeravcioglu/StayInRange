@@ -12,8 +12,8 @@ namespace CollarCali
     /// A prop can also be turned and tilted while held, and placed where it is.
     ///
     /// Exists only on the machine of the player it belongs to (the bridge adds it for the local
-    /// player), and works identically in first and third person because it reads the view through
-    /// DualPlayerController rather than from either controller directly.
+    /// player), and works with any player controller because it reads the view through IPlayerRig
+    /// (the bridge's Rig) rather than from a controller directly.
     ///
     /// AUTHORITY. Nothing here decides who holds anything. Every pickup, catch, drop and throw is a
     /// REQUEST - to the dead player's own machine for a body (PlayerNetworkBridge RPCs), to the host for
@@ -23,7 +23,7 @@ namespace CollarCali
     ///
     /// INPUT. It has its own actions, built from the bindings in PlayerTuning, rather than borrowing
     /// Cowsins' or Malbers', because it has to work whichever of the two is active. While something is
-    /// held, DualPlayerController mutes the actions of both controllers that share these keys
+    /// held, the player controller (IPlayerRig.SetCarrying) mutes its own actions that share these keys
     /// (firing, aiming, melee, interact, reload, the mouse wheel and so on), which is what stops a
     /// throw from also firing the gun or punching.
     /// </summary>
@@ -45,7 +45,7 @@ namespace CollarCali
         const float PropHoldMargin = 0.5f;
 
         PlayerNetworkBridge _self;
-        DualPlayerController _dual;
+        IPlayerRig _rig;
 
         InputAction _interact;
         InputAction _throwReady;
@@ -107,10 +107,10 @@ namespace CollarCali
             foreach (var action in Actions())
                 action?.Dispose();
 
-            if (_dual != null)
+            if (PlayerRigs.IsAlive(_rig))
             {
-                _dual.SetCarrying(false, 1f);
-                _dual.SetInteractClaimed(false);
+                _rig.SetCarrying(false, 1f);
+                _rig.SetInteractClaimed(false);
             }
 
             RestoreCollisions();
@@ -139,7 +139,7 @@ namespace CollarCali
                 return;
 
             EnsureInput();
-            _dual = _self.DualPlayer;
+            _rig = _self.Rig;
             if (_hud == null)
                 _hud = BodyCarryHud.Create();
             if (_trajectory == null)
@@ -148,7 +148,7 @@ namespace CollarCali
             RefreshHeldFromNetwork();
             RestoreCollisionsIfDue();
 
-            bool usable = !_self.IsDead && _dual != null && !_dual.IsSuspended;
+            bool usable = !_self.IsDead && _rig != null && !_rig.IsSuspended;
             if (!usable)
             {
                 // Dead, or between lives. Whatever decides over the held thing releases it once it sees
@@ -157,7 +157,7 @@ namespace CollarCali
                     LoseHeld(silent: true);
                 _pending = null;
                 _target = null;
-                _dual?.SetInteractClaimed(false);
+                _rig?.SetInteractClaimed(false);
                 _hud.Hide();
                 _trajectory.Hide();
                 return;
@@ -188,8 +188,8 @@ namespace CollarCali
                 }
             }
 
-            // While something is in reach, E is ours alone - see DualPlayerController.SetInteractClaimed.
-            _dual.SetInteractClaimed(_mode == Mode.Idle && (_target != null || _pending != null));
+            // While something is in reach, E is ours alone - see IPlayerRig.SetInteractClaimed.
+            _rig.SetInteractClaimed(_mode == Mode.Idle && (_target != null || _pending != null));
 
             RefreshCollisionIgnore();
             UpdateFeedback();
@@ -200,7 +200,7 @@ namespace CollarCali
             _charging = false;
 
             // On a ladder the crosshair is on the ladder itself, and E must not lift it from under you.
-            if (_dual.IsClimbing)
+            if (_rig.IsClimbing)
             {
                 _target = null;
                 return;
@@ -250,7 +250,7 @@ namespace CollarCali
             {
                 _charging = false;
                 _mode = Mode.Holding;
-                _dual.SetThirdPersonAimView(false);
+                _rig.SetThirdPersonAimView(false);
                 return;
             }
 
@@ -258,8 +258,8 @@ namespace CollarCali
 
             // Third person aims from the eyes. Requested every frame rather than once, so it also
             // engages when a switch into third person lands mid-aim; repeated requests do nothing.
-            if (_dual.IsThirdPerson)
-                _dual.SetThirdPersonAimView(true);
+            if (_rig.IsThirdPerson)
+                _rig.SetThirdPersonAimView(true);
 
             var throwing = PlayerTuning.Active.throwing;
 
@@ -347,8 +347,8 @@ namespace CollarCali
 
             HandBackOtherSimulations(target);
 
-            if (_dual != null)
-                _dual.SetCarrying(true, PlayerTuning.Active.carry.carrySpeedMultiplier);
+            if (_rig != null)
+                _rig.SetCarrying(true, PlayerTuning.Active.carry.carrySpeedMultiplier);
 
             IgnoreCollisions(target);
 
@@ -389,11 +389,11 @@ namespace CollarCali
             _charging = false;
             _charge01 = 0f;
 
-            if (_dual != null)
+            if (_rig != null)
             {
-                _dual.SetCarrying(false, 1f);
+                _rig.SetCarrying(false, 1f);
                 // Nothing left to aim. A no-op if a throw has already asked for a delayed return.
-                _dual.SetThirdPersonAimView(false);
+                _rig.SetThirdPersonAimView(false);
             }
 
             ScheduleCollisionRestore();
@@ -459,7 +459,7 @@ namespace CollarCali
 
             // Back over the shoulder: after a moment when it was a throw, so it can be watched
             // leaving; at once for a drop.
-            _dual?.SetThirdPersonAimView(false,
+            _rig?.SetThirdPersonAimView(false,
                 throwIt ? PlayerTuning.Active.cameraTransition.aimViewReturnDelay : 0f);
 
             LoseHeld(silent: true);
@@ -492,7 +492,7 @@ namespace CollarCali
 
         void Throw(float charge01)
         {
-            if (_held == null || !_held.Throwable || _dual == null || !_dual.TryGetAim(out _, out var forward))
+            if (_held == null || !_held.Throwable || _rig == null || !_rig.TryGetAim(out _, out var forward))
                 return;
 
             var throwing = PlayerTuning.Active.throwing;
@@ -509,7 +509,7 @@ namespace CollarCali
             float speed = Mathf.Lerp(throwing.minThrowForce, throwing.maxThrowForce, shaped);
 
             var direction = (forward + Vector3.up * throwing.upwardBias).normalized;
-            var carrier = _dual != null ? _dual.GetBodyVelocity() : Vector3.zero;
+            var carrier = _rig != null ? _rig.GetBodyVelocity() : Vector3.zero;
             return direction * speed + carrier * throwing.inheritCarrierVelocity;
         }
 
@@ -544,9 +544,9 @@ namespace CollarCali
             carrierVelocity = default;
 
             if (held == null || !ReferenceEquals(held, _held) || ReferenceEquals(held, _releasedLocally) ||
-                _dual == null)
+                _rig == null)
                 return false;
-            if (!_dual.TryGetAim(out var origin, out var forward))
+            if (!_rig.TryGetAim(out var origin, out var forward))
                 return false;
 
             var carry = PlayerTuning.Active.carry;
@@ -579,15 +579,15 @@ namespace CollarCali
             facing = held.SupportsRotation
                 ? Quaternion.LookRotation(flat, Vector3.up) * _holdRotation
                 : Quaternion.LookRotation(-flat, Vector3.up);
-            carrierVelocity = _dual.GetBodyVelocity();
+            carrierVelocity = _rig.GetBodyVelocity();
             return true;
         }
 
         Vector3 FlatForward(Vector3 forward)
         {
             var flat = Vector3.ProjectOnPlane(forward, Vector3.up);
-            if (flat.sqrMagnitude < 0.0001f && _dual != null)
-                flat = Vector3.ProjectOnPlane(_dual.transform.forward, Vector3.up);
+            if (flat.sqrMagnitude < 0.0001f && _rig != null)
+                flat = Quaternion.Euler(0f, _rig.GetGameplayYaw(), 0f) * Vector3.forward;
             if (flat.sqrMagnitude < 0.0001f)
                 flat = Vector3.forward;
             return flat.normalized;
@@ -603,7 +603,7 @@ namespace CollarCali
             if (target == null || !target.SupportsRotation)
                 return;
 
-            var forward = _dual != null && _dual.TryGetAim(out _, out var aim) ? aim : transform.forward;
+            var forward = _rig != null && _rig.TryGetAim(out _, out var aim) ? aim : transform.forward;
             var facing = Quaternion.LookRotation(FlatForward(forward), Vector3.up);
             _holdRotation = SnapToStep(Quaternion.Inverse(facing) * target.Rotation, TurnStep(target));
         }
@@ -669,7 +669,7 @@ namespace CollarCali
             if (TryCrosshairTarget(out best, out isCatch))
                 return;
 
-            if (_dual == null || !_dual.TryGetAim(out var origin, out var forward))
+            if (_rig == null || !_rig.TryGetAim(out var origin, out var forward))
                 return;
 
             var tuning = PlayerTuning.Active;
@@ -804,7 +804,7 @@ namespace CollarCali
             target = null;
             isCatch = false;
 
-            if (_dual == null || !_dual.TryGetCrosshairRay(out var ray))
+            if (_rig == null || !_rig.TryGetCrosshairRay(out var ray))
                 return false;
 
             var tuning = PlayerTuning.Active;
@@ -813,7 +813,7 @@ namespace CollarCali
             // How far along the ray the player stands: zero in first person, the camera's distance
             // behind the character in third person.
             float behind = 0f;
-            if (_dual.TryGetAim(out var origin, out _))
+            if (_rig.TryGetAim(out var origin, out _))
                 behind = Mathf.Max(0f, Vector3.Dot(origin - ray.origin, ray.direction));
 
             RefreshOwnColliders();
@@ -882,7 +882,7 @@ namespace CollarCali
 
             _ownCollidersRefreshedAt = Time.time;
             _ownColliderScratch.Clear();
-            _dual?.CollectOwnColliders(_ownColliderScratch);
+            _rig?.CollectOwnColliders(_ownColliderScratch);
             _ownColliderSet.Clear();
             foreach (var collider in _ownColliderScratch)
             {
@@ -906,7 +906,7 @@ namespace CollarCali
                 RestoreCollisions();
 
             _ownColliders.Clear();
-            _dual?.CollectOwnColliders(_ownColliders);
+            _rig?.CollectOwnColliders(_ownColliders);
 
             _collisionTarget = target;
             _restoreCollisionsAt = -1f;
@@ -925,7 +925,7 @@ namespace CollarCali
 
             _nextCollisionRefresh = Time.time + CollisionRefreshSeconds;
             _ownColliders.Clear();
-            _dual?.CollectOwnColliders(_ownColliders);
+            _rig?.CollectOwnColliders(_ownColliders);
             _held.IgnoreCollisionsWith(_ownColliders, true);
         }
 
@@ -962,7 +962,7 @@ namespace CollarCali
 
             // A reticle only for the third-person aim view: first person already has the Cowsins
             // crosshair, and the shoulder view has nothing in the middle of the screen to aim with.
-            _hud.SetReticle(_mode == Mode.Aiming && _dual != null && _dual.IsAimViewLive);
+            _hud.SetReticle(_mode == Mode.Aiming && _rig != null && _rig.IsAimViewLive);
 
             switch (_mode)
             {
@@ -1005,7 +1005,7 @@ namespace CollarCali
                     float speed = Mathf.Lerp(tuning.throwing.minThrowForce, tuning.throwing.maxThrowForce, shaped);
                     _hud.SetCharge(true, _charge01, speed);
 
-                    if (tuning.throwing.showTrajectory && _held != null && _dual.TryGetAim(out _, out var forward))
+                    if (tuning.throwing.showTrajectory && _held != null && _rig.TryGetAim(out _, out var forward))
                     {
                         var velocity = ComputeThrowVelocity(forward, _charge01, tuning.throwing);
                         _trajectory.Show(_held.Position, velocity, _charge01, tuning.throwing);

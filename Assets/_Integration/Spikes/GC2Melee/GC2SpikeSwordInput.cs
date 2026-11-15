@@ -76,30 +76,14 @@ namespace CollarCali.Spikes
             if (pressed)
                 _bridge.TryAttack(MeleeKey.A);
 
+            // Game Creator's melee only hurts hitboxes marked TeamCanHit; the zombies' get marked here.
             if (Time.unscaledTime >= _nextZombieScan)
             {
                 _nextZombieScan = Time.unscaledTime + 0.5f;
-                OpenZombiesToMelee();
+                MeleeHitboxMarker.MarkZombies();
             }
         }
 
         float _nextZombieScan;
-
-        /// <summary>
-        /// Game Creator's melee only hurts colliders marked TeamCanHit. Until the enemy bootstrap
-        /// (phase 4) marks them, this marks the trigger hitboxes of every zombie in the scene, the
-        /// spawned ones too, so the sword can be tried on them.
-        /// </summary>
-        static void OpenZombiesToMelee()
-        {
-            foreach (var zombie in FindObjectsByType<ZombieHealth>(FindObjectsSortMode.None))
-            {
-                foreach (var hitbox in zombie.GetComponentsInChildren<Collider>(true))
-                {
-                    if (hitbox.isTrigger && hitbox.GetComponent<TeamCanHit>() == null)
-                        hitbox.gameObject.AddComponent<TeamCanHit>();
-                }
-            }
-        }
     }
 }

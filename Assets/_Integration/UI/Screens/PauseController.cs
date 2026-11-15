@@ -53,7 +53,8 @@ namespace CollarCali.UI
             ? _local.Object != null && _local.Object.IsValid && _local.IsLocalOwner
             : _offline != null && _offline.isActiveAndEnabled;
 
-        DualPlayerController Dual => _local != null ? _local.DualPlayer : _offline;
+        /// <summary>The live player, whichever controller runs it.</summary>
+        IPlayerRig Rig => _local != null ? _local.Rig : _offline != null ? _offline : null;
 
         void Awake()
         {
@@ -140,9 +141,9 @@ namespace CollarCali.UI
             if (!Cursor.visible)
                 Cursor.visible = true;
 
-            var dual = Dual;
-            if (dual != null)
-                dual.SetMenuOpen(true);
+            var rig = Rig;
+            if (rig != null)
+                rig.SetMenuOpen(true);
 
             // A click on empty space drops the selection; the keys and a gamepad need one to move from.
             if (!_settings.IsVisible && _view.LostFocus())
@@ -158,7 +159,7 @@ namespace CollarCali.UI
 
             _open = open;
             UiInput.SetMenuOpen(this, open);
-            var dual = Dual;
+            var rig = Rig;
 
             if (open)
             {
@@ -167,8 +168,8 @@ namespace CollarCali.UI
                 // same moment still needs one to be clicked.
                 UiKit.EnsureEventSystem();
 
-                if (dual != null)
-                    dual.SetMenuOpen(true);
+                if (rig != null)
+                    rig.SetMenuOpen(true);
                 Cursor.lockState = CursorLockMode.None;
                 Cursor.visible = true;
                 _view.Show();
@@ -178,8 +179,8 @@ namespace CollarCali.UI
             _view.Hide();
             if (_settings.IsVisible)
                 _settings.Hide();
-            if (dual != null)
-                dual.SetMenuOpen(false);
+            if (rig != null)
+                rig.SetMenuOpen(false);
 
             // Back to the game: the gameplay cursor is always locked, alive or spectating.
             if (relockCursor)

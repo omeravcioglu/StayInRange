@@ -89,9 +89,10 @@ namespace CollarCali
                 _dirty = true;
             }
 
-            var steveInput = dual != null && dual.SteveRoot != null
-                ? dual.SteveRoot.GetComponentInChildren<PlayerInput>(true)
-                : null;
+            // The third-person body's input, whichever controller runs it.
+            var rig = _bridge != null ? _bridge.Rig : _dual != null ? _dual : null;
+            var ownBody = rig != null ? rig.Body : null;
+            var steveInput = ownBody != null ? ownBody.GetComponentInChildren<PlayerInput>(true) : null;
             if (steveInput != _steveInput)
             {
                 _steveInput = steveInput;

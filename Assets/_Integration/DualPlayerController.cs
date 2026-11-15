@@ -191,6 +191,8 @@ namespace CollarCali
             _networkBridge = bridge;
             _networkMode = true;
             _onModeChanged = onModeChanged;
+            if (isActiveAndEnabled)
+                PlayerRigs.Register(this);
         }
 
         public bool OwnsCollider(Collider other)
@@ -243,7 +245,10 @@ namespace CollarCali
 
         void OnEnable()
         {
-            PlayerRigs.Register(this);
+            // Offline this is the local player. A networked copy is the local player only once its owner
+            // binds it (BindNetworkOwner); every other player's copy stays out of the registry.
+            if (!_networkMode || _networkBridge != null)
+                PlayerRigs.Register(this);
         }
 
         void OnDisable()

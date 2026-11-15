@@ -35,6 +35,9 @@ namespace CollarCali.UI
         /// <summary>The live controller: the networked player's, or the offline test player's.</summary>
         DualPlayerController Dual => _local != null ? _local.DualPlayer : _offlineDual;
 
+        /// <summary>The live player as the rest of the game sees it, whichever controller runs it.</summary>
+        IPlayerRig Rig => _local != null ? _local.Rig : _offlineDual != null ? _offlineDual : null;
+
         Canvas _fxCanvas;
         Canvas _hudCanvas;
         Canvas _promptCanvas;
@@ -163,10 +166,10 @@ namespace CollarCali.UI
                 Rebind();
             }
 
-            var dual = Dual;
+            var rig = Rig;
             bool dead = _local != null ? _local.IsDead : _cowsins.IsDead;
-            bool thirdPerson = dual != null && dual.IsThirdPerson;
-            bool suspended = dual != null && dual.IsSuspended;
+            bool thirdPerson = rig != null && rig.IsThirdPerson;
+            bool suspended = rig != null && rig.IsSuspended;
 
             _cowsins.ReadHealth(out float health, out float maxHealth, out float shield01);
             if (_cowsins.Dependencies == null)
@@ -295,9 +298,10 @@ namespace CollarCali.UI
             if (_local != null)
                 return _local.transform.position;
 
+            var rig = Rig;
+            if (rig != null && rig.IsThirdPerson && rig.Body != null)
+                return rig.Body.transform.position;
             var dual = Dual;
-            if (dual != null && dual.IsThirdPerson && dual.SteveRoot != null)
-                return dual.SteveRoot.transform.position;
             if (dual != null && dual.FpsBody != null)
                 return dual.FpsBody.position;
             return transform.position;
@@ -475,7 +479,7 @@ namespace CollarCali.UI
             if (!thirdPerson)
                 return -1f;
 
-            var steve = Dual != null ? Dual.SteveRoot : null;
+            var steve = Rig?.Body;
             if (steve == null)
                 return -1f;
 

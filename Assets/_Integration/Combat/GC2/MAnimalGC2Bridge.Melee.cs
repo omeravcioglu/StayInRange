@@ -13,9 +13,10 @@ namespace CollarCali.Combat
     ///   - An attack starts only on the ground, in Malbers' Idle or Locomotion, with no Malbers mode
     ///     playing (TryAttack; CanMelee says why not): no attacks while climbing, wall running,
     ///     hanging from a ledge, on a ladder, swimming, in the air, or in a Malbers action or hit.
-    ///   - While it plays, Malbers' movement and input are locked: the stick does not walk the body
-    ///     out of a swing and Jump does not cut it short. The skill's own lunge and warp still move it
-    ///     (root motion and the driver). Only locks this set are released afterwards.
+    ///   - While it plays, Malbers' movement and input are locked (through MAnimalLocks, shared with
+    ///     the menu, carrying and the rest): the stick does not walk the body out of a swing and Jump
+    ///     does not cut it short. The skill's own lunge and warp still move it (root motion and the
+    ///     driver).
     ///   - Leaving the ground, any other Malbers state, or a Malbers mode starting (a hit reaction)
     ///     cancels it at once. One started some other way while not allowed is cancelled the same way.
     ///   - Its hits: Game Creator runs a skill's On Hit once per struck collider, so a blade crossing a
@@ -66,7 +67,6 @@ namespace CollarCali.Combat
         public string LastCancel { get; private set; }
 
         MeleePhase _phase = MeleePhase.None;
-        bool _lockedMovement, _lockedInput;
 
         struct PendingHit
         {
@@ -133,6 +133,27 @@ namespace CollarCali.Combat
             return true;
         }
 
+        /// <summary>
+        /// Stops any attack at once - the player went down, or the controller is handing the body
+        /// over - and gives back the locks it held. Nothing happens when no attack is playing.
+        /// </summary>
+        public void CancelAttack(string reason)
+        {
+            if (Character == null)
+                return;
+
+            if (IsAttacking || IsAttackPhase(CurrentPhase))
+            {
+                Melee?.ForceCancel();
+                LastCancel = reason;
+                AttackCancelled?.Invoke(reason);
+            }
+
+            Clear();
+            ReleaseMelee();
+            _phase = CurrentPhase;
+        }
+
         /// <summary>A new strike resets which enemies it has hit. Safe to call more than once a frame.</summary>
         void SyncStrike()
         {
@@ -173,27 +194,13 @@ namespace CollarCali.Combat
                 Unlock();
         }
 
-        void Lock()
-        {
-            _lockedMovement = !Animal.LockMovement;
-            if (_lockedMovement)
-                Animal.LockMovement = true;
-            _lockedInput = !Animal.LockInput;
-            if (_lockedInput)
-                Animal.LockInput = true;
-        }
+        /// <summary>The swing holds Malbers' movement and input through the character's shared lock set.</summary>
+        void Lock() => MAnimalLocks.Of(Animal)?.Lock(this, movement: true, input: true);
 
         void Unlock()
         {
             if (Animal != null)
-            {
-                if (_lockedMovement)
-                    Animal.LockMovement = false;
-                if (_lockedInput)
-                    Animal.LockInput = false;
-            }
-
-            _lockedMovement = _lockedInput = false;
+                MAnimalLocks.Of(Animal)?.Release(this);
         }
 
         void ReleaseMelee()

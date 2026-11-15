@@ -122,6 +122,7 @@ namespace CollarCali
         bool _malbersThirdPerson;
         Transform _malbersDrive;
         DualPlayerController _dual;
+        ThirdPersonPlayer _tps;
         WeaponFlashlight _flashlight;
         NetworkTransform _networkTransform;
         ChangeDetector _identityChanges;
@@ -151,6 +152,31 @@ namespace CollarCali
         public bool IsLocalOwner => Object != null && HasStateAuthority;
         public bool IsMalbersThirdPerson => _malbersThirdPerson;
         public DualPlayerController DualPlayer => _dual;
+
+        /// <summary>
+        /// The local player's controller as the rest of the game sees it (telekinesis, the HUD, pause,
+        /// enemies), whichever controller it is. Null on other players' machines.
+        /// </summary>
+        public IPlayerRig Rig
+        {
+            get
+            {
+                if (_tps != null)
+                    return _tps;
+                if (_dual != null)
+                    return _dual;
+                return null;
+            }
+        }
+
+        /// <summary>The third-person-only controller, when this player uses it (Resources/PlayerRigRecipe).</summary>
+        public ThirdPersonPlayer ThirdPerson => _tps;
+
+        /// <summary>
+        /// The owner's own third-person body: the character ThirdPersonPlayer runs, or
+        /// DualPlayerController's Steve. Null on other players' machines.
+        /// </summary>
+        GameObject OwnBody => _tps != null ? _tps.gameObject : _dual != null ? _dual.SteveRoot : null;
 
         /// <summary>
         /// The player this object belongs to. State authority, not input authority: players are
@@ -221,7 +247,8 @@ namespace CollarCali
                 CharacterIndex = ColorIndex;
                 EnableLocalGameplay();
                 HookShootEvents(true);
-                EnsureDualPlayer();
+                if (!EnsureThirdPersonPlayer())
+                    EnsureDualPlayer();
                 EnsureLocalFlashlight();
                 EnsureTelekinesis();
                 // Steve exists now (EnsureDualPlayer builds it), so dress both the body others see
@@ -269,6 +296,7 @@ namespace CollarCali
             All.Remove(this);
             HookShootEvents(false);
             CleanupDetachedFps();
+            DestroyThirdPersonPlayer();
         }
 
         void OnDestroy()
@@ -276,6 +304,7 @@ namespace CollarCali
             All.Remove(this);
             HookShootEvents(false);
             CleanupDetachedFps();
+            DestroyThirdPersonPlayer();
         }
 
         /// <summary>The local player's lift / throw / catch controller. Only the local player gets one.</summary>
@@ -380,7 +409,8 @@ namespace CollarCali
             if (dead)
             {
                 // Taken before the controllers are parked, which zeroes it.
-                var velocity = _dual != null ? _dual.GetBodyVelocity()
+                var rig = Rig;
+                var velocity = rig != null ? rig.GetBodyVelocity()
                     : _fpsRigidbody != null ? _fpsRigidbody.linearVelocity : Vector3.zero;
 
                 if (HasStateAuthority)
@@ -434,7 +464,7 @@ namespace CollarCali
             {
                 var holdPos = _creepHold.position;
                 transform.SetPositionAndRotation(holdPos, _creepHold.rotation);
-                _dual?.TeleportGameplay(holdPos, _creepHold.eulerAngles.y);
+                Rig?.TeleportGameplay(holdPos, _creepHold.eulerAngles.y);
                 return;
             }
 
@@ -528,8 +558,9 @@ namespace CollarCali
         /// </summary>
         public Vector3 GetGameplayWorldPosition()
         {
-            if (_dual != null)
-                return _dual.GetGameplayWorldPosition();
+            var rig = Rig;
+            if (rig != null)
+                return rig.GetGameplayWorldPosition();
             if (_malbersThirdPerson && _malbersDrive != null)
                 return _malbersDrive.position;
             if (fpsBody != null)
@@ -638,8 +669,9 @@ namespace CollarCali
 
         public float GetGameplayYaw()
         {
-            if (_dual != null)
-                return _dual.GetGameplayYaw();
+            var rig = Rig;
+            if (rig != null)
+                return rig.GetGameplayYaw();
             if (_malbersThirdPerson && _malbersDrive != null)
                 return _malbersDrive.eulerAngles.y;
             if (_movement != null)
@@ -659,9 +691,10 @@ namespace CollarCali
                 _networkTransform.Teleport(position);
             transform.SetPositionAndRotation(position, rot);
 
-            if (_dual != null)
+            var rig = Rig;
+            if (rig != null)
             {
-                _dual.TeleportGameplay(position, yawDegrees);
+                rig.TeleportGameplay(position, yawDegrees);
                 return;
             }
 
@@ -798,11 +831,12 @@ namespace CollarCali
             // caught, not to the master where the creep's brain happens to live.
             GameSfx.Play2D(SfxId.CreepGrabbedSting);
             _creepDragLoop = GameSfx.PlayLoop(SfxId.CreepDragLoop, hold);
-            if (_dual != null && _dual.IsThirdPerson && _dual.SteveRoot != null)
+            var rig = Rig;
+            if (rig != null && rig.IsThirdPerson && rig.Body != null)
             {
-                _creepHoldOldParent = _dual.SteveRoot.transform.parent;
-                _dual.SteveRoot.transform.SetParent(hold, true);
-                _dual.SteveRoot.transform.localPosition = Vector3.zero;
+                _creepHoldOldParent = rig.Body.transform.parent;
+                rig.Body.transform.SetParent(hold, true);
+                rig.Body.transform.localPosition = Vector3.zero;
             }
             else if (fpsBody != null)
             {
@@ -827,8 +861,9 @@ namespace CollarCali
 
             _creepGrabLocked = false;
             _creepDragLoop.Stop();
-            if (_dual != null && _dual.IsThirdPerson && _dual.SteveRoot != null)
-                _dual.SteveRoot.transform.SetParent(_creepHoldOldParent, true);
+            var rig = Rig;
+            if (rig != null && rig.IsThirdPerson && rig.Body != null)
+                rig.Body.transform.SetParent(_creepHoldOldParent, true);
             else if (fpsBody != null)
             {
                 fpsBody.SetParent(_creepHoldOldParent, true);
@@ -839,6 +874,52 @@ namespace CollarCali
 
             _creepHold = null;
             _creepHoldOldParent = null;
+        }
+
+        /// <summary>
+        /// The third-person-only controller, when Resources/PlayerRigRecipe says networked players use
+        /// it. Its character is made where this player spawns, at the scene root as DualPlayerController
+        /// does with Steve, and drives this networked root from then on (EnterMalbersThirdPerson). The
+        /// Cowsins rig stays parked underneath it, as it does in DualPlayerController's third person.
+        /// False when the recipe says to use DualPlayerController.
+        /// </summary>
+        bool EnsureThirdPersonPlayer()
+        {
+            if (!HasStateAuthority)
+                return false;
+            if (_tps != null)
+                return true;
+
+            var prefab = PlayerRigRecipe.ThirdPersonPrefabInUse();
+            if (prefab == null)
+                return false;
+
+            // The networked player prefab carries a DualPlayerController for the old path; this player
+            // has no use for it.
+            var dual = GetComponent<DualPlayerController>();
+            if (dual != null)
+                dual.enabled = false;
+
+            _tps = Instantiate(prefab, transform.position, Quaternion.Euler(0f, transform.eulerAngles.y, 0f));
+            _tps.name = prefab.name + " (local)";
+            _tps.BindNetworkOwner(this);
+
+            IsThirdPerson = true;
+            _appliedCharacterIndex = int.MinValue;
+            EnterMalbersThirdPerson(_tps.transform);
+
+            // The redesigned HUD, as for DualPlayerController.
+            if (GetComponent<UI.HudRoot>() == null)
+                gameObject.AddComponent<UI.HudRoot>();
+            return true;
+        }
+
+        void DestroyThirdPersonPlayer()
+        {
+            if (_tps == null)
+                return;
+            Destroy(_tps.gameObject);
+            _tps = null;
         }
 
         void EnsureDualPlayer()
@@ -960,8 +1041,8 @@ namespace CollarCali
             if (remoteBody != null)
                 CharacterSelection.Apply(remoteBody.gameObject, index);
 
-            if (_dual != null && _dual.SteveRoot != null)
-                CharacterSelection.Apply(_dual.SteveRoot, index);
+            if (OwnBody != null)
+                CharacterSelection.Apply(OwnBody, index);
 
             // A skin swaps the materials the colour was painted on; paint the new ones.
             _appliedColorIndex = int.MinValue;
@@ -995,7 +1076,7 @@ namespace CollarCali
                 Paint(_remoteRenderers, index);
             }
 
-            var steve = _dual != null ? _dual.SteveRoot : null;
+            var steve = OwnBody;
             if (steve != null && index != _appliedSteveColorIndex)
             {
                 _appliedSteveColorIndex = index;
@@ -1108,8 +1189,9 @@ namespace CollarCali
         /// </summary>
         void EnterDownedLocal()
         {
-            if (_dual != null)
-                _dual.EnterDowned();
+            var rig = Rig;
+            if (rig != null)
+                rig.EnterDowned();
 
             // Takes the camera, the input and the HUD in one move - the same switch that is used to
             // decide what belongs to the local player in the first place.
@@ -1119,6 +1201,15 @@ namespace CollarCali
         /// <summary>Gives the local player their body back after a revive, in first person.</summary>
         void ExitDownedLocal()
         {
+            if (_tps != null)
+            {
+                // Third person only: the Cowsins rig stays parked, and the character comes back where
+                // the revive put it. The body the others see is for them alone again.
+                SetRemoteBodyVisible(false);
+                _tps.ExitDowned();
+                return;
+            }
+
             SetLocalOnlyEnabled(true);
             // Hidden again because they are back behind their own eyes; the third-person mesh is for
             // everybody else to look at.

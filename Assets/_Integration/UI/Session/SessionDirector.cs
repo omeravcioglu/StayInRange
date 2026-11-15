@@ -224,7 +224,7 @@ namespace CollarCali.UI
         {
             foreach (var bridge in PlayerNetworkBridge.All)
             {
-                if (bridge != null && bridge.IsLocalOwner && bridge.DualPlayer != null &&
+                if (bridge != null && bridge.IsLocalOwner && bridge.Rig != null &&
                     bridge.GetComponent<HudRoot>() != null)
                     return true;
             }

@@ -187,7 +187,9 @@ namespace CollarCali.EditorTools
             floor.transform.position = new Vector3(0f, -0.5f, 0f);
 
             PrefabUtility.InstantiatePrefab(player);
-            PrefabUtility.InstantiatePrefab(rig);
+            // ThirdPersonPlayer makes its own camera rig when play starts.
+            if (player.GetComponent<ThirdPersonPlayer>() == null)
+                PrefabUtility.InstantiatePrefab(rig);
             return true;
         }
 
@@ -250,7 +252,10 @@ namespace CollarCali.EditorTools
         /// <summary>Drives the character one Editor frame at a time and writes down what it does.</summary>
         partial class Probe
         {
-            enum Phase { Find, Settle, Stand, LookAside, FaceCamera, JumpStill, Rest1, WalkJump, Rest2, DoubleJump, Attack, MalbersMode, Melee, Done }
+            enum Phase { Find, Settle, Stand, LookAside, FaceCamera, JumpStill, Rest1, WalkJump, Rest2, DoubleJump, Attack, MalbersMode, Melee, Rig, Done }
+
+            /// <summary>After the melee checks: ThirdPersonPlayer's own, when the player has one.</summary>
+            Phase AfterMelee => _tps != null ? Phase.Rig : Phase.Done;
 
             /// <summary>How far the body is turned from the camera to see the head follow it (degrees).</summary>
             const float AsideAngle = 40f;
@@ -408,6 +413,8 @@ namespace CollarCali.EditorTools
                             _groundY = _animal.transform.position.y;
                             GroundProbe();
                             StateOwnership();
+                            if (_tps != null)
+                                CheckRigStart();
                             Enter(Phase.Stand);
                         }
                         else if (InPhase > 6f)
@@ -515,11 +522,16 @@ namespace CollarCali.EditorTools
 
                     case Phase.MalbersMode:
                         if (InPhase > 0.6f && WatchMalbersMode())
-                            Enter(_gc2 != null && _bridge != null ? Phase.Melee : Phase.Done);
+                            Enter(_gc2 != null && _bridge != null ? Phase.Melee : AfterMelee);
                         break;
 
                     case Phase.Melee:
                         if (StepMelee())
+                            Enter(AfterMelee);
+                        break;
+
+                    case Phase.Rig:
+                        if (StepRig())
                             Enter(Phase.Done);
                         break;
 
@@ -602,6 +614,9 @@ namespace CollarCali.EditorTools
                     _traffic = _animal.gameObject.AddComponent<AnimatorTrafficProbe>();
 
                 _hand = _animal.Anim.GetBoneTransform(HumanBodyBones.RightHand);
+                _tps = _animal.GetComponent<ThirdPersonPlayer>();
+                if (_tps != null)
+                    _notes.Add("ThirdPersonPlayer on the player: it made its own camera rig, and its checks run last.");
                 _gc2 = _animal.GetComponent<GC2Character>();
                 if (_gc2 != null)
                 {
@@ -825,6 +840,15 @@ namespace CollarCali.EditorTools
                     {
                         _notes.Add("No Malbers attack mode on this character to try.");
                         return true;
+                    }
+
+                    // ThirdPersonPlayer switches Malbers' attack modes off (the sword owns the attack
+                    // button); this one is switched back on until the melee checks are done with it.
+                    if (_tps != null && !_mode.Active)
+                    {
+                        _mode.Enable();
+                        _modeReenabled = true;
+                        _notes.Add($"Switched Malbers' {_mode.ID.name} mode back on for the mode checks; ThirdPersonPlayer had it off.");
                     }
 
                     _modeStartedAt = Now;
@@ -1156,6 +1180,7 @@ namespace CollarCali.EditorTools
 
                 md.AppendLine();
                 WriteMelee(md);
+                WriteRig(md);
 
                 md.AppendLine("## Log");
                 md.AppendLine($"- {_logErrors} errors and {_logWarnings} warnings while playing" + (_log.Count > 0 ? "; the most frequent:" : "."));
