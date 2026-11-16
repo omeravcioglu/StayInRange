@@ -9,6 +9,8 @@ using MalbersAnimations.InputSystem;
 using MalbersAnimations.Scriptables;
 using Unity.Cinemachine;
 using UnityEngine;
+using UnityEngine.InputSystem;
+using UnityEngine.InputSystem.LowLevel;
 using UnityEngine.Rendering;
 using Object = UnityEngine.Object;
 
@@ -25,7 +27,7 @@ namespace CollarCali.EditorTools
         /// </summary>
         partial class Probe
         {
-            enum RigStep { Carry, CarryEnd, Keys, AimIn, AimOut, Menu, Teleport, Downed, Revive, ReviveWalk, Done }
+            enum RigStep { Carry, CarryEnd, Keys, AimIn, AimOut, Menu, Teleport, Downed, Revive, ReviveWalk, KeyboardWalk, Done }
 
             ThirdPersonPlayer _tps;
             RigStep _rigStep = RigStep.Carry;
@@ -40,6 +42,43 @@ namespace CollarCali.EditorTools
             CinemachineBlendDefinition _blendBefore;
             int _shadowOnlyBefore;
             bool _strafeBefore, _modeReenabled;
+
+            // Input devices: another player that takes them, and the real W key.
+            GameObject _standIn;
+            bool _standInTook;
+            float _keyboardWalked = -1f;
+            Vector2 _moveActionValue;
+            InputSettings.EditorInputBehaviorInPlayMode _focusBefore;
+            InputSettings.BackgroundBehavior _backgroundBefore;
+
+            PlayerInput OwnInput => _animal.GetComponentInChildren<PlayerInput>(true);
+
+            static bool KeyboardAndMouseExist => Keyboard.current != null && Mouse.current != null;
+
+            static bool HasDevice(PlayerInput input, InputDevice device)
+            {
+                if (input == null || device == null)
+                    return false;
+                foreach (var held in input.devices)
+                {
+                    if (held == device)
+                        return true;
+                }
+
+                return false;
+            }
+
+            static bool HasKeyboardAndMouse(PlayerInput input) => HasDevice(input, Keyboard.current) && HasDevice(input, Mouse.current);
+
+            static string DevicesOf(PlayerInput input)
+            {
+                if (input == null)
+                    return "no PlayerInput";
+                var names = new List<string>();
+                foreach (var device in input.devices)
+                    names.Add(device.name);
+                return names.Count > 0 ? string.Join(" + ", names) : "no devices";
+            }
 
             float InRigStep => Now - _rigStepStart;
 
@@ -112,6 +151,11 @@ namespace CollarCali.EditorTools
                 var sword = FindAsset<MeleeWeapon>("TeamSword_Weapon");
                 RigCheck("equips the team sword", bridge != null && bridge.Character != null && sword != null && bridge.Character.Combat.IsEquipped(sword));
                 RigCheck("gives Malbers the input, unlocked", _tps.IsRunning && !_animal.LockInput && !_animal.LockMovement);
+
+                if (KeyboardAndMouseExist)
+                    RigCheck("holds the keyboard and mouse", HasKeyboardAndMouse(OwnInput), DevicesOf(OwnInput));
+                else
+                    _notes.Add("This Editor has no keyboard or mouse device, so the device checks are skipped.");
             }
 
             /// <summary>One frame of the third-person player's checks; true when they are over.</summary>
@@ -380,6 +424,20 @@ namespace CollarCali.EditorTools
                             _revivePoint = _animal.transform.position + new Vector3(-6f, 0f, 3f);
                             _tps.TeleportGameplay(_revivePoint, 0f);
                             RigCheck("a downed player can be moved to where they will be revived", Flat(_animal.transform.position - _revivePoint) < 0.01f);
+
+                            // Another player wakes while this one is down and takes the keyboard and mouse,
+                            // as a test character left in a scene does when play starts.
+                            if (KeyboardAndMouseExist)
+                            {
+                                var ours = OwnInput;
+                                _standIn = new GameObject("Stand-in other player");
+                                _standIn.SetActive(false);
+                                var other = _standIn.AddComponent<PlayerInput>();
+                                other.actions = ours != null ? ours.actions : null;
+                                other.defaultActionMap = "Gameplay";
+                                _standIn.SetActive(true);
+                                _standInTook = HasKeyboardAndMouse(other);
+                            }
                         }
                         else if (InRigStep > 1f)
                         {
@@ -398,6 +456,16 @@ namespace CollarCali.EditorTools
                             RigCheck("a revived player is the local rig again", ReferenceEquals(PlayerRigs.Local, _tps));
                             RigCheck("a revive gives Malbers the input back, unlocked", _tps.IsRunning && !_animal.LockInput && !_animal.LockMovement);
                             RigCheck("Malbers' pause key stays muted after a revive", InputLive("Pause") != true);
+
+                            if (_standIn != null)
+                            {
+                                var other = _standIn.GetComponent<PlayerInput>();
+                                RigCheck("a revive takes the keyboard and mouse back from another player in the scene",
+                                    _standInTook && HasKeyboardAndMouse(OwnInput) && !HasDevice(other, Keyboard.current) && !HasDevice(other, Mouse.current),
+                                    $"the other player had them first: {_standInTook}; now this player has {DevicesOf(OwnInput)}, the other {DevicesOf(other)}");
+                                Object.Destroy(_standIn);
+                                _standIn = null;
+                            }
                         }
                         else if (InRigStep > 1.5f)
                         {
@@ -418,7 +486,63 @@ namespace CollarCali.EditorTools
                             Move(Vector3.zero);
                             RigCheck("a revived player walks as before", _walked > 0f && Mathf.Abs(_reviveWalked - _walked) < 0.25f * _walked,
                                 $"{_reviveWalked:0.00} m in 1.2 s, {_walked:0.00} m before going down");
-                            NextRigStep(RigStep.Done);
+                            NextRigStep(RigStep.KeyboardWalk);
+                        }
+
+                        break;
+
+                    case RigStep.KeyboardWalk:
+                        // The real keyboard: W through the PlayerInput and Malbers' input link, which the
+                        // walks above skip by setting Malbers' move axis directly.
+                        if (!_rigStepBegun)
+                        {
+                            if (Keyboard.current == null)
+                            {
+                                _notes.Add("No keyboard device: the W key was not tried.");
+                                NextRigStep(RigStep.Done);
+                                break;
+                            }
+
+                            if (InRigStep < 0.6f)
+                                break;
+                            _rigStepBegun = true;
+                            _rigStepStart = Now;
+                            // Key presses reach the game only while its view has focus, which batch mode
+                            // has no way to give it; both settings are put back afterwards.
+                            _focusBefore = InputSystem.settings.editorInputBehaviorInPlayMode;
+                            _backgroundBefore = InputSystem.settings.backgroundBehavior;
+                            InputSystem.settings.editorInputBehaviorInPlayMode = InputSettings.EditorInputBehaviorInPlayMode.AllDeviceInputAlwaysGoesToGameView;
+                            InputSystem.settings.backgroundBehavior = InputSettings.BackgroundBehavior.IgnoreFocus;
+                            if (!Keyboard.current.enabled)
+                                InputSystem.EnableDevice(Keyboard.current);
+                            _rigWalkFrom = _animal.transform.position;
+                            InputSystem.QueueStateEvent(Keyboard.current, new KeyboardState(UnityEngine.InputSystem.Key.W));
+                        }
+                        else
+                        {
+                            if (InRigStep > 0.6f && _moveActionValue == Vector2.zero)
+                            {
+                                var move = OwnInput != null && OwnInput.actions != null ? OwnInput.actions.FindAction("Move") : null;
+                                if (move != null)
+                                    _moveActionValue = move.ReadValue<Vector2>();
+                            }
+
+                            if (InRigStep > 1.2f)
+                            {
+                                _keyboardWalked = Flat(_animal.transform.position - _rigWalkFrom);
+                                InputSystem.QueueStateEvent(Keyboard.current, new KeyboardState());
+                                InputSystem.settings.editorInputBehaviorInPlayMode = _focusBefore;
+                                InputSystem.settings.backgroundBehavior = _backgroundBefore;
+
+                                bool walked = _walked > 0f && _keyboardWalked > 0.75f * _walked;
+                                bool held = HasKeyboardAndMouse(OwnInput);
+                                if (!walked && held && _moveActionValue == Vector2.zero)
+                                    _notes.Add($"The W key never reached the game's input in this Editor (batch mode), although the player holds the keyboard; walked {_keyboardWalked:0.00} m. Not counted.");
+                                else
+                                    RigCheck("holding W on the keyboard walks the player", walked,
+                                        $"{_keyboardWalked:0.00} m in 1.2 s, {_walked:0.00} m with Malbers' move axis; Move read {_moveActionValue}; devices: {DevicesOf(OwnInput)}");
+                                NextRigStep(RigStep.Done);
+                            }
                         }
 
                         break;
@@ -437,6 +561,8 @@ namespace CollarCali.EditorTools
 
                 md.AppendLine("## Third-person player (ThirdPersonPlayer)");
                 md.AppendLine($"- {_rigChecks.Count(c => c.pass)} of {_rigChecks.Count} checks pass.");
+                if (_keyboardWalked >= 0f)
+                    md.AppendLine($"- Holding W on the keyboard for 1.2 s: {_keyboardWalked:0.00} m.");
                 if (_carryWalked >= 0f)
                     md.AppendLine($"- Walking 1.2 s: {_walked:0.00} m; carrying at the game's carry speed ({_carrySpeed:0.00}) {_carryWalked:0.00} m; " +
                                   $"after a revive {_reviveWalked:0.00} m. Malbers' time multiplier slows the animation and the root motion it " +

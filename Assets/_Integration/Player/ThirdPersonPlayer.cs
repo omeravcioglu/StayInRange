@@ -336,8 +336,13 @@ namespace CollarCali
             if (animal == null)
                 return;
 
+            FreeInputDevices();
+
             foreach (var playerInput in GetComponentsInChildren<PlayerInput>(true))
             {
+                // Woken again so it picks up the devices just freed, if it started without any.
+                if (playerInput.enabled && playerInput.devices.Count == 0)
+                    playerInput.enabled = false;
                 playerInput.enabled = true;
                 playerInput.notificationBehavior = PlayerNotifications.InvokeCSharpEvents;
                 try
@@ -386,6 +391,60 @@ namespace CollarCali
 
             ApplyCarrySlowdown();
             _running = true;
+        }
+
+        /// <summary>
+        /// Unity gives each input device to the first PlayerInput that wakes up wanting it, so another
+        /// player left in the scene (a test character, a scene's own player) takes the keyboard and
+        /// mouse and leaves this one standing still. Before this player's input starts, the keyboard,
+        /// mouse and gamepad are taken from any other player; this player's PlayerInput picks them up
+        /// as the input link restarts it. Unity only hands devices between players on its own when
+        /// there is a single one, so the other player does not take them back.
+        /// </summary>
+        void FreeInputDevices()
+        {
+            var mine = GetComponentsInChildren<PlayerInput>(true);
+            var wanted = new List<InputDevice>(3);
+            if (Keyboard.current != null)
+                wanted.Add(Keyboard.current);
+            if (Mouse.current != null)
+                wanted.Add(Mouse.current);
+            if (Gamepad.current != null)
+                wanted.Add(Gamepad.current);
+
+            List<string> holders = null;
+            foreach (var other in PlayerInput.all)
+            {
+                if (other == null || System.Array.IndexOf(mine, other) >= 0 || !other.user.valid)
+                    continue;
+
+                bool took = false;
+                foreach (var device in wanted)
+                {
+                    if (!Holds(other.user, device))
+                        continue;
+                    other.user.UnpairDevice(device);
+                    took = true;
+                }
+
+                if (took)
+                    (holders ??= new List<string>()).Add(other.name);
+            }
+
+            if (holders != null)
+                Debug.LogWarning("[ThirdPersonPlayer] Took the keyboard, mouse and gamepad from " + string.Join(", ", holders) +
+                                 ": another player in the scene had them. Remove it where this player is used.", this);
+        }
+
+        static bool Holds(UnityEngine.InputSystem.Users.InputUser user, InputDevice device)
+        {
+            foreach (var paired in user.pairedDevices)
+            {
+                if (paired == device)
+                    return true;
+            }
+
+            return false;
         }
 
         /// <summary>Takes the player's input away from Malbers and holds the character still.</summary>
