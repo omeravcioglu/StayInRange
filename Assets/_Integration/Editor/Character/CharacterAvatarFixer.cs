@@ -30,8 +30,9 @@ namespace CollarCali.EditorTools
     ///
     /// Everything that embeds a copy of the model has to be rebuilt afterwards (Character Visuals) -
     /// an unpacked copy keeps the old bone lengths. Pressing Configure ▸ Enforce T-Pose / Reset on the
-    /// model's Rig tab undoes the fix; the guard logs an error when that happens, and running this
-    /// again restores it. The lasting fix is to move the toe bones down to the soles in Blender.
+    /// model's Rig tab undoes the fix, and also the reference pose CharacterTPoseMatcher posed like
+    /// Steve's; the guard logs an error when that happens, and Pose Avatar Like Steve (which runs this
+    /// at its end) restores both. The lasting fix is to move the toe bones down to the soles in Blender.
     /// </summary>
     public static class CharacterAvatarFixer
     {
@@ -404,8 +405,8 @@ namespace CollarCali.EditorTools
 
             Debug.LogError("[CollarCali] The player model's avatar fix was lost (" +
                            (scaleOk ? "" : "import scale changed; ") + (hipsOk ? "" : "hips moved; ") +
-                           "the feet will sink again). Run Tools > CollarCali > Character > Fix Avatar & Scale, " +
-                           "then Build Character Visuals.");
+                           "the feet will sink again, and the limbs no longer move like Steve's). Run Tools > CollarCali > " +
+                           "Character > Pose Avatar Like Steve (it fixes the hips too), then rebuild the player.");
         }
     }
 }

@@ -14,7 +14,7 @@ namespace CollarCali
     /// remote clones never enable local-only Cowsins systems.
     /// </summary>
     [DefaultExecutionOrder(-200)]
-    public class PlayerNetworkBridge : NetworkBehaviour, INetworkedDamageRouter, IDamageable, IDamageTarget, ITelekineticTarget
+    public partial class PlayerNetworkBridge : NetworkBehaviour, INetworkedDamageRouter, IDamageable, IDamageTarget, ITelekineticTarget
     {
         [Header("FPS Engine")]
         [SerializeField] GameObject fpsRoot;
@@ -173,6 +173,37 @@ namespace CollarCali
         public ThirdPersonPlayer ThirdPerson => _tps;
 
         /// <summary>
+        /// The third-person player's health, when this player uses that controller: it replaces the
+        /// parked Cowsins PlayerStats for damage, death, the collar's yank and revives. Null otherwise.
+        /// </summary>
+        PlayerVitals TpsVitals => _tps != null ? _tps.Vitals : null;
+
+        /// <summary>
+        /// The player a collider belongs to: one under a bridge (the body the others see, the Cowsins
+        /// rig), or the local player's own third-person character, which lives at the scene root
+        /// rather than under its bridge. Null for anything else.
+        /// </summary>
+        public static PlayerNetworkBridge FindByCollider(Collider other)
+        {
+            if (other == null)
+                return null;
+
+            var bridge = other.GetComponentInParent<PlayerNetworkBridge>();
+            if (bridge != null)
+                return bridge;
+
+            for (int i = 0; i < All.Count; i++)
+            {
+                var owner = All[i];
+                var rig = owner != null ? owner.Rig : null;
+                if (rig != null && rig.OwnsCollider(other))
+                    return owner;
+            }
+
+            return null;
+        }
+
+        /// <summary>
         /// The owner's own third-person body: the character ThirdPersonPlayer runs, or
         /// DualPlayerController's Steve. Null on other players' machines.
         /// </summary>
@@ -218,7 +249,61 @@ namespace CollarCali
 
         void Awake()
         {
+            // Before the body's renderers are first shown or hidden, so the collar goes with them.
+            EnsureRemoteCollar();
             SetRemoteBodyVisible(true);
+        }
+
+        GameObject _remoteCollar;
+
+        /// <summary>
+        /// The collar on the body the other players see - and on the corpse it becomes - where
+        /// PlayerCharacterBuilder fitted it on the player's own character (PlayerRigRecipe). The same
+        /// model under both, so the same place against the neck bone.
+        /// </summary>
+        void EnsureRemoteCollar()
+        {
+            if (remoteBody == null || _remoteCollar != null)
+                return;
+
+            var recipe = PlayerRigRecipe.Load();
+            var animator = GetComponent<Animator>();
+            if (recipe == null || recipe.collarPrefab == null || animator == null || animator.avatar == null || !animator.avatar.isHuman)
+                return;
+
+            string neckName = null;
+            foreach (var human in animator.avatar.humanDescription.human)
+            {
+                if (human.humanName == "Neck")
+                    neckName = human.boneName;
+            }
+
+            Transform neck = null;
+            if (!string.IsNullOrEmpty(neckName))
+            {
+                foreach (var t in remoteBody.GetComponentsInChildren<Transform>(true))
+                {
+                    if (t.name == neckName)
+                    {
+                        neck = t;
+                        break;
+                    }
+                }
+            }
+
+            if (neck == null)
+                return;
+
+            _remoteCollar = Instantiate(recipe.collarPrefab, neck, false);
+            _remoteCollar.name = "Collar";
+            foreach (var extra in _remoteCollar.GetComponentsInChildren<Animator>(true))
+                Destroy(extra);
+            foreach (var extra in _remoteCollar.GetComponentsInChildren<Collider>(true))
+                Destroy(extra);
+            _remoteCollar.transform.SetLocalPositionAndRotation(recipe.collarPosition, recipe.collarRotation);
+            _remoteCollar.transform.localScale = Vector3.one * recipe.collarScale;
+            foreach (var t in _remoteCollar.GetComponentsInChildren<Transform>(true))
+                t.gameObject.layer = neck.gameObject.layer;
         }
 
         public override void Spawned()
@@ -254,7 +339,13 @@ namespace CollarCali
                 // Steve exists now (EnsureDualPlayer builds it), so dress both the body others see
                 // and the owner's own third-person mesh in this player's colour.
                 ApplyIdentity();
-                if (_cowsinsStats != null)
+                var vitals = TpsVitals;
+                if (vitals != null)
+                {
+                    SyncedHealth = vitals.Health;
+                    SyncedShield = 0f;
+                }
+                else if (_cowsinsStats != null)
                 {
                     SyncedHealth = _cowsinsStats.Health;
                     SyncedShield = _cowsinsStats.Shield;
@@ -294,6 +385,7 @@ namespace CollarCali
         public override void Despawned(NetworkRunner runner, bool hasState)
         {
             All.Remove(this);
+            DestroyBodyWeapons();
             HookShootEvents(false);
             CleanupDetachedFps();
             DestroyThirdPersonPlayer();
@@ -374,7 +466,14 @@ namespace CollarCali
         public override void Render()
         {
             if (HasStateAuthority)
+            {
                 SyncAuthorityState();
+                if (_tps != null)
+                {
+                    CaptureMalbersBody();
+                    CaptureBodyWeapons();
+                }
+            }
             else
                 ApplyProxyVisualState();
 
@@ -766,12 +865,24 @@ namespace CollarCali
                 "\",\"hasDual\":" + (_dual != null ? "true" : "false") + "}");
             // #endregion
 
-            if (_cowsinsStats != null && !_cowsinsStats.IsDead)
+            var vitals = TpsVitals;
+            if (vitals != null)
+            {
+                if (!vitals.IsDead)
+                {
+                    vitals.Kill(new DamageInfo(99999f, false));
+                    SyncedHealth = vitals.Health;
+                    IsDead = true;
+                }
+            }
+            else if (_cowsinsStats != null && !_cowsinsStats.IsDead)
                 ApplyDamageLocal(99999f, false);
 
             yield return new WaitForSecondsRealtime(0.35f);
 
-            if (_cowsinsStats != null)
+            if (vitals != null)
+                vitals.Revive();
+            else if (_cowsinsStats != null)
                 _cowsinsStats.Respawn(position + Vector3.up * FeetOffset());
 
             AuthorityTeleport(position, yawDegrees);
@@ -783,7 +894,13 @@ namespace CollarCali
                 "\",\"gameplay\":\"" + GetGameplayWorldPosition().ToString() + "\"}");
             // #endregion
 
-            if (_cowsinsStats != null)
+            if (vitals != null)
+            {
+                SyncedHealth = vitals.Health;
+                SyncedShield = 0f;
+                IsDead = vitals.IsDead;
+            }
+            else if (_cowsinsStats != null)
             {
                 SyncedHealth = _cowsinsStats.Health;
                 SyncedShield = _cowsinsStats.Shield;
@@ -837,6 +954,7 @@ namespace CollarCali
                 _creepHoldOldParent = rig.Body.transform.parent;
                 rig.Body.transform.SetParent(hold, true);
                 rig.Body.transform.localPosition = Vector3.zero;
+                _tps?.SetHeldByCreep(true);
             }
             else if (fpsBody != null)
             {
@@ -863,7 +981,10 @@ namespace CollarCali
             _creepDragLoop.Stop();
             var rig = Rig;
             if (rig != null && rig.IsThirdPerson && rig.Body != null)
+            {
                 rig.Body.transform.SetParent(_creepHoldOldParent, true);
+                _tps?.SetHeldByCreep(false);
+            }
             else if (fpsBody != null)
             {
                 fpsBody.SetParent(_creepHoldOldParent, true);
@@ -902,11 +1023,15 @@ namespace CollarCali
 
             _tps = Instantiate(prefab, transform.position, Quaternion.Euler(0f, transform.eulerAngles.y, 0f));
             _tps.name = prefab.name + " (local)";
+            // Also points the player's vitals at this bridge, so damage reaches the owner's machine.
             _tps.BindNetworkOwner(this);
 
             IsThirdPerson = true;
             _appliedCharacterIndex = int.MinValue;
             EnterMalbersThirdPerson(_tps.transform);
+            ParkCowsinsBody();
+            // The body the others see plays this character's animation from now on.
+            BeginPublishingBody(_tps);
 
             // The redesigned HUD, as for DualPlayerController.
             if (GetComponent<UI.HudRoot>() == null)
@@ -914,8 +1039,47 @@ namespace CollarCali
             return true;
         }
 
+        readonly List<Collider> _parkedCowsinsColliders = new List<Collider>();
+
+        /// <summary>
+        /// The third-person player has no use for the Cowsins rig the networked prefab carries: its
+        /// colliders go off and its body is moved far below the level, as DualPlayerController does in
+        /// its own third person. Otherwise an invisible capsule on the Player layer stands at the
+        /// spawn point with the character inside it, blocking aims and throws. Owner only - on the
+        /// other machines that capsule follows this root and is what makes the player solid there.
+        /// </summary>
+        void ParkCowsinsBody()
+        {
+            if (!HasStateAuthority || fpsRoot == null)
+                return;
+
+            _parkedCowsinsColliders.Clear();
+            foreach (var col in fpsRoot.GetComponentsInChildren<Collider>(true))
+            {
+                if (col == null || !col.enabled)
+                    continue;
+                col.enabled = false;
+                _parkedCowsinsColliders.Add(col);
+            }
+
+            if (fpsBody != null)
+            {
+                if (_fpsRigidbody != null)
+                {
+                    _fpsRigidbody.isKinematic = true;
+                    _fpsRigidbody.useGravity = false;
+                    _fpsRigidbody.linearVelocity = Vector3.zero;
+                }
+
+                fpsBody.position = transform.position + Vector3.down * 500f;
+                if (_fpsRigidbody != null)
+                    _fpsRigidbody.position = fpsBody.position;
+            }
+        }
+
         void DestroyThirdPersonPlayer()
         {
+            StopPublishingBody();
             if (_tps == null)
                 return;
             Destroy(_tps.gameObject);
@@ -1071,9 +1235,9 @@ namespace CollarCali
             if (index != _appliedColorIndex && remoteBody != null)
             {
                 _appliedColorIndex = index;
-                if (_remoteRenderers == null)
-                    _remoteRenderers = remoteBody.GetComponentsInChildren<Renderer>(true);
-                Paint(_remoteRenderers, index);
+                // The skinned body only, as on the owner's own character: what hangs on it - the collar,
+                // a weapon - keeps its own look.
+                Paint(remoteBody.GetComponentsInChildren<SkinnedMeshRenderer>(true), index);
             }
 
             var steve = OwnBody;
@@ -1379,12 +1543,20 @@ namespace CollarCali
             // stick.
             AuthorityTeleport(position, yawDegrees);
 
-            if (_cowsinsStats != null)
+            var vitals = TpsVitals;
+            if (vitals != null)
+                vitals.Revive();
+            else if (_cowsinsStats != null)
                 _cowsinsStats.Respawn(position + Vector3.up * FeetOffset());
 
             AuthorityTeleport(position, yawDegrees);
 
-            if (_cowsinsStats != null)
+            if (vitals != null)
+            {
+                SyncedHealth = vitals.Health;
+                SyncedShield = 0f;
+            }
+            else if (_cowsinsStats != null)
             {
                 SyncedHealth = _cowsinsStats.Health;
                 SyncedShield = _cowsinsStats.Shield;
@@ -1482,6 +1654,25 @@ namespace CollarCali
 
         void ApplyDamageLocal(float damage, bool isHeadshot)
         {
+            var vitals = TpsVitals;
+            if (vitals != null)
+            {
+                _applyingLocalDamage = true;
+                try
+                {
+                    vitals.ApplyLocal(new DamageInfo(Mathf.Abs(damage), isHeadshot));
+                    SyncedHealth = vitals.Health;
+                    SyncedShield = 0f;
+                    IsDead = vitals.IsDead;
+                }
+                finally
+                {
+                    _applyingLocalDamage = false;
+                }
+
+                return;
+            }
+
             if (_cowsinsStats == null)
                 return;
 
@@ -1566,7 +1757,14 @@ namespace CollarCali
 
         void SyncAuthorityState()
         {
-            if (_cowsinsStats != null)
+            var vitals = TpsVitals;
+            if (vitals != null)
+            {
+                SyncedHealth = vitals.Health;
+                SyncedShield = 0f;
+                IsDead = vitals.IsDead;
+            }
+            else if (_cowsinsStats != null)
             {
                 SyncedHealth = _cowsinsStats.Health;
                 SyncedShield = _cowsinsStats.Shield;
@@ -1652,6 +1850,14 @@ namespace CollarCali
         {
             if (_remoteAnimator == null)
                 return;
+
+            // A third-person player's body plays its Malbers animation (PlayerNetworkBridge.RemoteBody),
+            // with its weapons (PlayerNetworkBridge.RemoteWeapons).
+            if (UsesMalbersBody && ApplyMalbersBody())
+            {
+                ApplyBodyWeapons();
+                return;
+            }
 
             ProbeAnimatorParameters();
 

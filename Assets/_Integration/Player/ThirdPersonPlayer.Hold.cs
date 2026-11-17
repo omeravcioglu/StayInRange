@@ -25,6 +25,7 @@ namespace CollarCali
             {
                 _menuOpen = true;
                 Locks?.Lock(_menuHold, movement: true, input: true);
+                SyncAttackKeys();
                 HoldCamerasForMenu();
                 return;
             }
@@ -34,6 +35,7 @@ namespace CollarCali
 
             _menuOpen = false;
             Locks?.Release(_menuHold);
+            SyncAttackKeys();
             ReleaseCamerasFromMenu();
         }
 
@@ -75,7 +77,7 @@ namespace CollarCali
             EndAimViewImmediate();
             SetCarrying(false, 1f);
             SetInteractClaimed(false);
-            CancelMelee("downed");
+            StopAttacks();
 
             _suspended = true;
             StopMalbers();

@@ -147,7 +147,8 @@ namespace CollarCali
                 return;
 
 #if CMPSETUP_COMPLETE
-            var bridge = other.GetComponentInParent<PlayerNetworkBridge>();
+            // Also finds the local third-person player, whose character is not under its bridge.
+            var bridge = PlayerNetworkBridge.FindByCollider(other);
             if (bridge != null)
             {
                 if (!bridge.IsLocalOwner || bridge.IsDead)

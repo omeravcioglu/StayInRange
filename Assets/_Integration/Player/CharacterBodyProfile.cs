@@ -104,8 +104,9 @@ namespace CollarCali
         {
             [Tooltip("Height of the camera target above the feet (m).")]
             public float targetHeight = 1.30f;
-            [Tooltip("Distance of the third-person camera behind the target (m).")]
-            public float distance = 4.5f;
+            [Tooltip("Distance of the third-person camera behind the target (m). Far enough to see the surroundings; " +
+                     "what comes between it and the player fades out rather than pulling it in.")]
+            public float distance = 6.5f;
             [Tooltip("Sideways shoulder offset (m).")]
             public float shoulder = 0.45f;
             [Tooltip("How softly the camera follows on its x, y and z axes (seconds-ish).")]
@@ -133,6 +134,10 @@ namespace CollarCali
             [Tooltip("Reach of the raised arms against Steve's: how far below a ledge the body hangs, so " +
                      "the hands land on it (0 = measure). Check on Celil's levels.")]
             [Min(0f)] public float reachScale;
+            [Tooltip("How near the wall the climb holds the body, and how far out from it a ledge grab puts it, against " +
+                     "Steve's (0 = the reach scale). Malbers climbs with no hand IK, so this is what puts the hands and feet " +
+                     "on the wall rather than in the air; the live check's climbing table shows how near they come.")]
+            [Min(0f)] public float wallScale;
         }
 
         [Header("Model")]
@@ -183,5 +188,27 @@ namespace CollarCali
 
         [Header("Camera")]
         public CameraNumbers cameraRig = new CameraNumbers();
+
+        /// <summary>
+        /// The collar every player wears - the game's namesake. PlayerCharacterBuilder fits the model
+        /// round this body's neck from the two meshes: at the neck's narrowest point between the chest
+        /// and the head, the ring's axis along the neck, its hole a little wider than the neck there. The
+        /// body the other players see wears the same (PlayerRigRecipe, PlayerNetworkBridge).
+        /// </summary>
+        [Serializable]
+        public class CollarNumbers
+        {
+            [Tooltip("The collar model: MeshyImports/.../Meshy_AI_Hazard_Tech_Collar. Empty: no collar.")]
+            public GameObject model;
+            [Tooltip("The hole against the neck: 1 touches it, more leaves a gap.")]
+            [Range(0.9f, 1.6f)] public float fit = 1.08f;
+            [Tooltip("Up or down from the neck's narrowest point, in neck lengths (neck bone to head bone): up toward the head is positive.")]
+            [Range(-0.5f, 0.5f)] public float shift;
+            [Tooltip("Turn about the neck (degrees), so the collar's front faces forward.")]
+            [Range(-180f, 180f)] public float twist;
+        }
+
+        [Header("Collar")]
+        public CollarNumbers collar = new CollarNumbers();
     }
 }

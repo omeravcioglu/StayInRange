@@ -2,7 +2,6 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
-using GameCreator.Runtime.Melee;
 using MalbersAnimations;
 using MalbersAnimations.Controller;
 using MalbersAnimations.InputSystem;
@@ -20,14 +19,16 @@ namespace CollarCali.EditorTools
     {
         /// <summary>
         /// The checks of ThirdPersonPlayer (third-person plan, phase 3), run last when the player has
-        /// one: what telekinesis, the HUD, pause and the network bridge rely on. Carrying (slower, the
-        /// throw's keys muted, no sword), the interact key shared by two holders, the throw aim view
-        /// in and out, a menu (and another lock outliving it), a teleport, and going down and being
-        /// revived.
+        /// one: what telekinesis, the HUD, pause and the network bridge rely on. Malbers' own combat
+        /// (its attacks on, the sword in hand, every striker aimed at enemy hitboxes), carrying (slower,
+        /// the throw's keys muted, no attacks), the interact key shared by two holders, the throw aim
+        /// view in and out, a menu (and another lock outliving it), a teleport, going down and being
+        /// revived, the real W key, no attacks in the air, and a swing of the fists and then of the
+        /// drawn sword that each hurt an enemy once.
         /// </summary>
         partial class Probe
         {
-            enum RigStep { Carry, CarryEnd, Keys, AimIn, AimOut, Menu, Teleport, Downed, Revive, ReviveWalk, KeyboardWalk, Done }
+            enum RigStep { Carry, CarryEnd, Keys, AimIn, AimOut, Menu, Teleport, Downed, Revive, ReviveWalk, KeyboardWalk, AirAttack, SwingFists, DrawSword, SwingSword, Done }
 
             ThirdPersonPlayer _tps;
             RigStep _rigStep = RigStep.Carry;
@@ -50,6 +51,13 @@ namespace CollarCali.EditorTools
             Vector2 _moveActionValue;
             InputSettings.EditorInputBehaviorInPlayMode _focusBefore;
             InputSettings.BackgroundBehavior _backgroundBefore;
+
+            // No attacks in the air; a swing of the fists, then of the sword, at a stand-in enemy.
+            bool _airSeen, _airMuteChecked;
+            float _airSeenAt;
+            CollarCali.Diagnostics.MeleeTestDummy _swingDummy;
+            bool _swingStarted;
+            int _swordHolster;
 
             PlayerInput OwnInput => _animal.GetComponentInChildren<PlayerInput>(true);
 
@@ -96,6 +104,43 @@ namespace CollarCali.EditorTools
                 _rigStepBegun = false;
             }
 
+            /// <summary>
+            /// One press of the attack key at a stand-in enemy in reach, once the player stands still:
+            /// Malbers' fists or weapon through the enemy's trigger hitboxes and MalbersHitRelay to the
+            /// game's damage. The swing crosses its body and head, and must hurt it once. True when done.
+            /// </summary>
+            bool StepSwing(string with, float reach)
+            {
+                if (!_rigStepBegun)
+                {
+                    var state = _animal.ActiveStateID;
+                    bool still = state != null && state.name == "Idle" && Flat(_tps.GetBodyVelocity()) < 0.2f;
+                    if (InRigStep < 0.4f || (!still && InRigStep < 3f))
+                        return false;
+
+                    _rigStepBegun = true;
+                    _rigStepStart = Now;
+                    var forward = Vector3.ProjectOnPlane(_animal.transform.forward, Vector3.up).normalized;
+                    _swingDummy = CollarCali.Diagnostics.MeleeTestDummy.Create("Swing test enemy",
+                        _animal.transform.position + forward * reach, Quaternion.LookRotation(-forward));
+                    _swingStarted = _tps.TryAttack();
+                    return false;
+                }
+
+                if (InRigStep < 1.6f)
+                    return false;
+
+                int hits = _swingDummy != null ? _swingDummy.Hits : 0;
+                RigCheck($"one attack with {with} hurts an enemy in reach, once", _swingStarted && hits == 1,
+                    _swingStarted
+                        ? $"{hits} hit(s), {(_swingDummy != null ? _swingDummy.Total : 0f):0} damage, {(_swingDummy != null ? _swingDummy.Criticals : 0)} critical"
+                        : "refused for: " + _tps.LastAttackRefusal);
+                if (_swingDummy != null)
+                    Object.Destroy(_swingDummy.gameObject);
+                _swingDummy = null;
+                return true;
+            }
+
             /// <summary>Whether the input link takes <paramref name="input"/> now; null when it has no such input.</summary>
             bool? InputLive(string input)
             {
@@ -139,17 +184,35 @@ namespace CollarCali.EditorTools
                     "Malbers' camera: " + (malbersCamera != null ? PathOf(malbersCamera) : "none"));
 
                 var attackModes = _animal.modes.Where(m => m?.ID != null && m.ID.name.Contains("Attack")).ToList();
-                RigCheck("Malbers' own attack modes are off", attackModes.All(m => !m.Active),
+                RigCheck("Malbers' own attack modes are on", attackModes.Count > 0 && attackModes.All(m => m.Active),
                     attackModes.Count == 0 ? "none on this character" : string.Join(", ", attackModes.Select(m => m.ID.name + (m.Active ? " on" : " off"))));
                 var combos = _animal.GetComponentsInChildren<ComboManager>(true);
-                RigCheck("Malbers' combo manager is off", combos.All(c => !c.enabled), combos.Length + " combo manager(s)");
+                RigCheck("Malbers' combo manager is on", combos.Length > 0 && combos.All(c => c.enabled), combos.Length + " combo manager(s)");
+                var gameCreator = _animal.GetComponents<Component>()
+                    .Where(c => c != null && (c.GetType().FullName.StartsWith("GameCreator.") || c.GetType().Name == "MAnimalGC2Bridge"))
+                    .Select(c => c.GetType().Name).ToList();
+                RigCheck("no Game Creator melee on the player", gameCreator.Count == 0, gameCreator.Count > 0 ? string.Join(", ", gameCreator) : null);
 
                 var pause = InputLive("Pause");
                 RigCheck("Malbers' pause key is muted", pause != true, pause == null ? "no Pause input on this character" : null);
 
-                var bridge = _tps.MeleeBridge;
-                var sword = FindAsset<MeleeWeapon>("TeamSword_Weapon");
-                RigCheck("equips the team sword", bridge != null && bridge.Character != null && sword != null && bridge.Character.Combat.IsEquipped(sword));
+                var weapons = _tps.Weapons;
+                var holstered = weapons != null ? weapons.holsters.FirstOrDefault(h => h?.Weapon != null && h.Weapon.name.StartsWith("Sword")) : null;
+                _swordHolster = holstered != null ? holstered.GetID : 0;
+                RigCheck("puts Malbers' sword in its holster, with the fists out", holstered != null && !weapons.CombatMode,
+                    weapons == null ? "no Malbers weapon manager"
+                        : holstered == null ? "no sword in any holster"
+                        : "in holster " + (holstered.ID != null ? holstered.ID.name : "?") + (weapons.CombatMode ? ", but a weapon is drawn" : ""));
+                int enemyLayer = LayerMask.NameToLayer("Enemy");
+                var strikers = _animal.GetComponentsInChildren<MDamager>(true)
+                    .Where(d => d is MalbersAnimations.Weapons.MMelee || d is MAttackTrigger).ToList();
+                var blind = strikers.Where(d => enemyLayer < 0 || (d.Layer.value & (1 << enemyLayer)) == 0 ||
+                                                d.TriggerInteraction != QueryTriggerInteraction.Collide).ToList();
+                RigCheck("every weapon and fist hits enemy hitboxes (the Enemy layer, trigger colliders)", strikers.Count > 0 && blind.Count == 0,
+                    $"{strikers.Count} striker(s)" + (blind.Count > 0 ? "; not set: " + string.Join(", ", blind.Select(d => d.name)) : ""));
+                int drawnLayers = weapons != null ? weapons.OverrideWeaponLayer.Value.value : 0;
+                RigCheck("Malbers' weapon manager gives a drawn weapon the Enemy layer", enemyLayer >= 0 && (drawnLayers & (1 << enemyLayer)) != 0,
+                    "override layers: " + LayerNames(drawnLayers));
                 RigCheck("gives Malbers the input, unlocked", _tps.IsRunning && !_animal.LockInput && !_animal.LockMovement);
 
                 if (KeyboardAndMouseExist)
@@ -216,8 +279,8 @@ namespace CollarCali.EditorTools
                             if (absent.Count > 0)
                                 _notes.Add("Not on this character's input link, so nothing to mute: " + string.Join(", ", absent) + ".");
 
-                            RigCheck("the sword is refused while carrying", !_tps.TryAttack() && _tps.LastAttackRefusal == "carrying",
-                                "refused for: " + (_tps.LastAttackRefusal ?? "nothing, it swung"));
+                            RigCheck("attacks are refused while carrying", !_tps.TryAttack() && _tps.LastAttackRefusal == "carrying",
+                                "refused for: " + (_tps.LastAttackRefusal ?? "nothing, it attacked"));
                             _rigWalkFrom = _animal.transform.position;
                             Move(Vector3.forward);
                         }
@@ -238,12 +301,11 @@ namespace CollarCali.EditorTools
                                 $"{_carryWalked:0.00} m in 1.2 s at carry speed {_carrySpeed:0.00} ({(_walked > 0f ? _carryWalked / _walked : 0f):P0} of walking), {_walked:0.00} m walking");
 
                             _tps.SetCarrying(false, 1f);
-                            bool refusedNow = !_tps.AttackButtonIsSwords(out string now) && now == "carrying";
-                            RigCheck("the click that ends a carry cannot also swing", refusedNow, "the button belonged to: " + (now ?? "the sword"));
+                            bool refusedNow = !_tps.CanAttack(out string now) && now == "carrying";
+                            RigCheck("the click that ends a carry cannot also attack", refusedNow && InputLive("Action1") != true,
+                                "the key belonged to: " + (now ?? "Malbers") + (InputLive("Action1") == true ? "; Malbers' Action1 is live" : ""));
                             RigCheck("letting go puts the time multiplier back", Mathf.Abs(_animal.TimeMultiplier - _timeMultiplierBefore) < 0.001f,
                                 $"{_animal.TimeMultiplier:0.00}");
-                            var muted = Names(ThirdPersonPlayer.CarryBlockedInputs).Where(i => InputLive(i) == false).ToList();
-                            RigCheck("letting go gives the keys back", muted.Count == 0, muted.Count > 0 ? "still muted: " + string.Join(", ", muted) : null);
                             NextRigStep(RigStep.Keys);
                         }
 
@@ -252,8 +314,10 @@ namespace CollarCali.EditorTools
                     case RigStep.Keys:
                         if (InRigStep > 0.1f)
                         {
-                            RigCheck("the sword has the button again once the carry is over", _tps.AttackButtonIsSwords(out string who),
-                                "the button belongs to: " + (who ?? "the sword"));
+                            RigCheck("attacks have the key again once the carry is over", _tps.CanAttack(out string who),
+                                "the key belongs to: " + (who ?? "Malbers"));
+                            var muted = Names(ThirdPersonPlayer.CarryBlockedInputs).Where(i => InputLive(i) == false).ToList();
+                            RigCheck("letting go gives the keys back", muted.Count == 0, muted.Count > 0 ? "still muted: " + string.Join(", ", muted) : null);
 
                             // Two holders of one key: telekinesis targets a body (interact), then lifts it.
                             _tps.SetInteractClaimed(true);
@@ -298,8 +362,9 @@ namespace CollarCali.EditorTools
                                 aimed && eye != null && Vector3.Distance(origin, eye.position) < 0.01f &&
                                 Vector3.Angle(forward, _tps.Brain.transform.forward) < 1f,
                                 aimed ? $"{(eye != null ? Vector3.Distance(origin, eye.position) : -1f):0.000} m from the eye camera" : "no aim");
-                            RigCheck("the sword is refused while aiming a throw", !_tps.AttackButtonIsSwords(out string why) && why == "aiming a throw",
-                                "the button belonged to: " + (why ?? "the sword"));
+                            RigCheck("attacks are refused while aiming a throw", !_tps.CanAttack(out string why) && why == "aiming a throw",
+                                "the key belonged to: " + (why ?? "Malbers"));
+                            RigCheck("aiming a throw mutes Malbers' attack key", InputLive("Action1") != true);
 
                             _tps.SetThirdPersonAimView(false, 0f);
                             NextRigStep(RigStep.AimOut);
@@ -343,8 +408,9 @@ namespace CollarCali.EditorTools
                             var follows = _tps.CameraRig.GetComponentsInChildren<ThirdPersonFollowTarget>(true);
                             RigCheck("a menu stops the camera turning", follows.Length > 0 && follows.All(f => !f.AllowCameraRotation.Value),
                                 follows.Length + " follow target(s)");
-                            RigCheck("the sword is refused in a menu", !_tps.TryAttack() && _tps.LastAttackRefusal == "a menu is open",
-                                "refused for: " + (_tps.LastAttackRefusal ?? "nothing, it swung"));
+                            RigCheck("attacks are refused in a menu", !_tps.TryAttack() && _tps.LastAttackRefusal == "a menu is open",
+                                "refused for: " + (_tps.LastAttackRefusal ?? "nothing, it attacked"));
+                            RigCheck("a menu mutes Malbers' attack key", InputLive("Action1") != true);
                             _rigWalkFrom = _animal.transform.position;
                             _menuStartY = _menuMaxY = _animal.transform.position.y;
                             Move(Vector3.forward);
@@ -417,8 +483,8 @@ namespace CollarCali.EditorTools
                                 !_tps.gameObject.activeSelf && _tps.CameraRig != null && !_tps.CameraRig.activeSelf && _tps.IsSuspended);
                             RigCheck("a downed player is not the local rig", !ReferenceEquals(PlayerRigs.Local, _tps));
                             RigCheck("a downed player has no aim and no crosshair", !_tps.TryGetAim(out _, out _) && !_tps.TryGetCrosshairRay(out _));
-                            RigCheck("the sword is refused while downed", !_tps.AttackButtonIsSwords(out string why) && why == "downed",
-                                "the button belonged to: " + (why ?? "the sword"));
+                            RigCheck("attacks are refused while downed", !_tps.CanAttack(out string why) && why == "downed",
+                                "the key belonged to: " + (why ?? "Malbers"));
 
                             // A revive places the player first (ReviveAt), while the character is still put away.
                             _revivePoint = _animal.transform.position + new Vector3(-6f, 0f, 3f);
@@ -499,7 +565,7 @@ namespace CollarCali.EditorTools
                             if (Keyboard.current == null)
                             {
                                 _notes.Add("No keyboard device: the W key was not tried.");
-                                NextRigStep(RigStep.Done);
+                                NextRigStep(RigStep.AirAttack);
                                 break;
                             }
 
@@ -541,10 +607,101 @@ namespace CollarCali.EditorTools
                                 else
                                     RigCheck("holding W on the keyboard walks the player", walked,
                                         $"{_keyboardWalked:0.00} m in 1.2 s, {_walked:0.00} m with Malbers' move axis; Move read {_moveActionValue}; devices: {DevicesOf(OwnInput)}");
+                                NextRigStep(RigStep.AirAttack);
+                            }
+                        }
+
+                        break;
+
+                    case RigStep.AirAttack:
+                        // A jump: no attack may start in the air (Malbers' air attacks throw the body up), and
+                        // the attacks are back once it lands.
+                        if (!_rigStepBegun)
+                        {
+                            if (InRigStep < 0.4f)
+                                break;
+                            _rigStepBegun = true;
+                            _rigStepStart = Now;
+                            _airSeen = _airMuteChecked = false;
+                            Press(true);
+                        }
+                        else
+                        {
+                            if (_held && InRigStep > 0.15f)
+                                Press(false);
+
+                            if (!_airSeen && _tps.InTheAir)
+                            {
+                                _airSeen = true;
+                                _airSeenAt = Now;
+                                RigCheck("attacks are refused in the air", !_tps.TryAttack() && _tps.LastAttackRefusal == "in the air",
+                                    "refused for: " + (_tps.LastAttackRefusal ?? "nothing, it attacked"));
+                            }
+
+                            // The key is muted in the player's next update, so it is read a moment later.
+                            if (_airSeen && !_airMuteChecked && _tps.InTheAir && Now - _airSeenAt > 0.05f)
+                            {
+                                _airMuteChecked = true;
+                                var live = InputLive("Action1");
+                                RigCheck("the air mutes Malbers' attack key", live != true,
+                                    live == null ? "no Action1 on the input link here" : null);
+                            }
+
+                            if ((_airSeen && !_tps.InTheAir && InRigStep > 0.3f) || InRigStep > 4f)
+                            {
+                                if (!_airSeen)
+                                    RigCheck("attacks are refused in the air", false, "the jump never left the ground");
+                                else
+                                    RigCheck("attacks have the key again after landing", _tps.CanAttack(out string after),
+                                        "the key belongs to: " + (after ?? "Malbers"));
+                                NextRigStep(RigStep.SwingFists);
+                            }
+                        }
+
+                        break;
+
+                    case RigStep.SwingFists:
+                        if (StepSwing("the fists", 0.7f))
+                        {
+                            if (_swordHolster != 0 && _tps.Weapons != null)
+                            {
+                                _tps.Weapons.Holster_Equip(_swordHolster);
+                                NextRigStep(RigStep.DrawSword);
+                            }
+                            else
+                            {
                                 NextRigStep(RigStep.Done);
                             }
                         }
 
+                        break;
+
+                    case RigStep.DrawSword:
+                    {
+                        // What its holster key (4) does: Malbers' draw.
+                        var weapons = _tps.Weapons;
+                        var action = weapons != null ? weapons.WeaponAction : MalbersAnimations.Weapons.Weapon_Action.None;
+                        bool drawn = weapons != null && weapons.CombatMode && weapons.Weapon != null &&
+                                     (action == MalbersAnimations.Weapons.Weapon_Action.Idle || action == MalbersAnimations.Weapons.Weapon_Action.None);
+                        if (drawn && InRigStep > 0.3f)
+                        {
+                            RigCheck("the sword's holster draws it", true, $"{weapons.Weapon.name} in hand {InRigStep:0.00} s after asking");
+                            NextRigStep(RigStep.SwingSword);
+                        }
+                        else if (InRigStep > 3f)
+                        {
+                            RigCheck("the sword's holster draws it", false, weapons == null
+                                ? "no Malbers weapon manager"
+                                : $"in hand: {(weapons.Weapon != null ? weapons.Weapon.name : "nothing")}, drawn: {weapons.CombatMode}, action: {action}");
+                            NextRigStep(RigStep.Done);
+                        }
+
+                        break;
+                    }
+
+                    case RigStep.SwingSword:
+                        if (StepSwing(_tps.Weapons != null && _tps.Weapons.Weapon != null ? "the sword" : "nothing in hand", 0.85f))
+                            NextRigStep(RigStep.Done);
                         break;
 
                     case RigStep.Done:

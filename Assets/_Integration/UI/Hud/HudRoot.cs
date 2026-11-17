@@ -172,7 +172,15 @@ namespace CollarCali.UI
             bool suspended = rig != null && rig.IsSuspended;
 
             _cowsins.ReadHealth(out float health, out float maxHealth, out float shield01);
-            if (_cowsins.Dependencies == null)
+            // The third-person player keeps its own health; the Cowsins rig it carries is parked.
+            var vitals = _local != null && _local.ThirdPerson != null ? _local.ThirdPerson.Vitals : null;
+            if (vitals != null)
+            {
+                health = vitals.Health;
+                maxHealth = vitals.MaxHealth;
+                shield01 = 0f;
+            }
+            else if (_cowsins.Dependencies == null)
             {
                 health = _local != null ? _local.SyncedHealth : 0f;
                 maxHealth = 100f;
@@ -187,7 +195,10 @@ namespace CollarCali.UI
             bool armed = !dead && !thirdPerson && !suspended && !paused;
             _weapon.Set(armed ? _cowsins.ReadWeapon() : default);
             _movement.Set(dead || suspended || paused ? default : _cowsins.ReadMovement(thirdPerson, ReadStamina(thirdPerson)));
-            _crosshair.Set(armed, _cowsins.EnemySpotted);
+            // The third-person player aims E and the throw through the middle of the screen; while the
+            // throw's own eye view is up, its reticle is the one shown.
+            bool tpsAim = _local != null && _local.ThirdPerson != null && !dead && !suspended && !paused && (rig == null || !rig.IsAimViewLive);
+            _crosshair.Set(armed || tpsAim, armed && _cowsins.EnemySpotted);
 
             // The carry prompts win: while one is up, E belongs to the telekinesis. Third person
             // shows Malbers' climbing prompts; first person, Cowsins' interactions.

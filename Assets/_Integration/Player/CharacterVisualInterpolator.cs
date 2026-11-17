@@ -23,6 +23,13 @@ namespace CollarCali
     /// The root moving outside the physics step (a script placing it, a respawn) is taken as it is,
     /// position and rotation each on their own, and so is a move longer than Teleport Distance in one
     /// step. While Suspended, or while the Animator is off (a ragdoll), nothing is smoothed.
+    ///
+    /// THE POSE. Malbers' Animator runs in the physics step too, so the body's pose changed only 50
+    /// times a second: on a 144 Hz screen the limbs held for two or three frames and then jumped, the
+    /// "snapping while moving". With Smooth Pose each humanoid bone is shown the same fraction of a
+    /// step between the last two poses the Animator made. Every physics step starts from the
+    /// Animator's own pose again, and scripts that bend bones after Update (look-at, hand contact)
+    /// work on the smoothed pose, as they would on the Animator's.
     /// </summary>
     [DefaultExecutionOrder(-500)]
     [DisallowMultipleComponent]
@@ -36,6 +43,10 @@ namespace CollarCali
 
         [Tooltip("A move this long in one physics step is shown at once rather than glided (metres).")]
         [Min(0.1f)] public float teleportDistance = 2f;
+
+        [Tooltip("Glide the body's pose between physics steps too. The Animator poses it once per physics step " +
+                 "(50 times a second), so on a fast screen the limbs held still and then jumped.")]
+        public bool smoothPose = true;
 
         /// <summary>Set by code that drives the body itself (a ragdoll, a cutscene) to show it unsmoothed.</summary>
         public bool Suspended { get; set; }
@@ -56,10 +67,20 @@ namespace CollarCali
         Vector3 _previousPosition, _currentPosition;
         Quaternion _previousRotation, _currentRotation;
 
+        // The humanoid bones, hips first, and the pose the last two physics steps left them in.
+        Transform[] _bones = Array.Empty<Transform>();
+        Quaternion[] _bonePrevious = Array.Empty<Quaternion>(), _boneCurrent = Array.Empty<Quaternion>();
+        Vector3 _hipsPrevious, _hipsCurrent;
+        bool _hasPose, _poseShown;
+
+        // A physics step has run since the pose was last taken (and whether the root jumped in it).
+        bool _posePending, _poseJumped;
+
         void OnEnable()
         {
             _animator = GetComponent<Animator>();
             _hasStep = false;
+            FindBones();
             _afterPhysics = StartCoroutine(AfterPhysics());
         }
 
@@ -69,14 +90,29 @@ namespace CollarCali
                 StopCoroutine(_afterPhysics);
             _afterPhysics = null;
             Restore();
+            RestorePose();
         }
 
         // The physics step sees the exact pose.
-        void FixedUpdate() => Restore();
+        void FixedUpdate()
+        {
+            Restore();
+            RestorePose();
+        }
 
         void Update()
         {
             Restore();
+            if (_posePending)
+            {
+                // The Animator posed the body in the physics step, and Malbers' IK manager finishes
+                // bending it (the head's look-at) after the step, in an after-step coroutine whose order
+                // against this one's is not fixed. By the first Update after the step both are done.
+                RecordPose(_poseJumped);
+                _posePending = false;
+                _poseJumped = false;
+            }
+
             Apply();
         }
 
@@ -101,13 +137,18 @@ namespace CollarCali
             _currentPosition = position;
             _currentRotation = rotation;
             _hasStep = true;
+            _posePending = true;
+            _poseJumped |= jumped;
         }
 
         /// <summary>Shows the visuals where the root was a fraction of a physics step ago.</summary>
         void Apply()
         {
             if (!_hasStep || Suspended || (_animator != null && !_animator.enabled) || Time.fixedDeltaTime <= 0f)
+            {
+                RestorePose();
                 return;
+            }
 
             var root = transform;
             root.GetPositionAndRotation(out var position, out var rotation);
@@ -119,6 +160,7 @@ namespace CollarCali
                 _previousRotation = _currentRotation = rotation;
 
             float t = Mathf.Clamp01((Time.time - Time.fixedTime) / Time.fixedDeltaTime);
+            ApplyPose(t);
             var shownPosition = Vector3.LerpUnclamped(_previousPosition, _currentPosition, t);
             var shownRotation = Quaternion.SlerpUnclamped(_previousRotation, _currentRotation, t);
             var turn = shownRotation * Quaternion.Inverse(rotation);
@@ -163,6 +205,88 @@ namespace CollarCali
         {
             t.GetLocalPositionAndRotation(out var position, out var rotation);
             return new Shown { Transform = t, LocalPosition = position, LocalRotation = rotation };
+        }
+
+        // ---- The pose --------------------------------------------------------------------------------
+
+        void FindBones()
+        {
+            _hasPose = _poseShown = _posePending = _poseJumped = false;
+            if (_animator == null || !_animator.isHuman || _animator.avatar == null)
+            {
+                _bones = Array.Empty<Transform>();
+                return;
+            }
+
+            var bones = new System.Collections.Generic.List<Transform>();
+            for (var bone = HumanBodyBones.Hips; bone < HumanBodyBones.LastBone; bone++)
+            {
+                var t = _animator.GetBoneTransform(bone);
+                if (t != null && !bones.Contains(t))
+                    bones.Add(t);
+            }
+
+            _bones = bones.ToArray();
+            _bonePrevious = new Quaternion[_bones.Length];
+            _boneCurrent = new Quaternion[_bones.Length];
+        }
+
+        /// <summary>After a physics step, once all of it is done: the pose it left becomes the newest one.</summary>
+        void RecordPose(bool jumped)
+        {
+            if (!smoothPose || _bones.Length == 0 || _bones[0] == null)
+            {
+                _hasPose = false;
+                return;
+            }
+
+            bool keep = _hasPose && !jumped;
+            for (int i = 0; i < _bones.Length; i++)
+            {
+                var rotation = _bones[i] != null ? _bones[i].localRotation : Quaternion.identity;
+                _bonePrevious[i] = keep ? _boneCurrent[i] : rotation;
+                _boneCurrent[i] = rotation;
+            }
+
+            var hips = _bones[0].localPosition;
+            _hipsPrevious = keep ? _hipsCurrent : hips;
+            _hipsCurrent = hips;
+            _hasPose = true;
+            _poseShown = false;
+        }
+
+        /// <summary>Shows each bone <paramref name="t"/> of the way from the older pose to the newer.</summary>
+        void ApplyPose(float t)
+        {
+            if (!smoothPose || !_hasPose)
+                return;
+
+            for (int i = 0; i < _bones.Length; i++)
+            {
+                if (_bones[i] != null)
+                    _bones[i].localRotation = Quaternion.SlerpUnclamped(_bonePrevious[i], _boneCurrent[i], t);
+            }
+
+            if (_bones[0] != null)
+                _bones[0].localPosition = Vector3.LerpUnclamped(_hipsPrevious, _hipsCurrent, t);
+            _poseShown = true;
+        }
+
+        /// <summary>Puts the Animator's own newest pose back.</summary>
+        void RestorePose()
+        {
+            if (!_poseShown)
+                return;
+
+            for (int i = 0; i < _bones.Length; i++)
+            {
+                if (_bones[i] != null)
+                    _bones[i].localRotation = _boneCurrent[i];
+            }
+
+            if (_bones.Length > 0 && _bones[0] != null)
+                _bones[0].localPosition = _hipsCurrent;
+            _poseShown = false;
         }
 
         void Restore()

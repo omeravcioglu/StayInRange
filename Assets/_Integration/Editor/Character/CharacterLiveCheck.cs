@@ -39,7 +39,10 @@ namespace CollarCali.EditorTools
     ///
     /// Batch (the Editor must be closed):
     ///   Unity -batchmode -projectPath . -executeMethod CollarCali.EditorTools.CharacterLiveCheck.RunBatch
-    ///         [-liveScene Assets/....unity] [-livePlayer Assets/....prefab] [-liveNoIK] -logFile live.log
+    ///         [-liveScene Assets/....unity] [-livePlayer Assets/....prefab] [-liveNoIK] [-livePoses] -logFile live.log
+    /// -livePoses ends the run with pictures of the player beside Malbers' own Steve in the same poses,
+    /// and measures the hands against his (grips, the bow string, a carried crate); -livePosesOnly goes
+    /// straight to them once the player has settled.
     /// Without -liveScene it plays a floor with the player and camera rig on it; with one, it plays
     /// that scene as saved and checks the player character in it. Leave out -quit: the check quits the
     /// Editor itself when it is done. Tools > CollarCali > Character > Live Check plays the open scene.
@@ -71,6 +74,9 @@ namespace CollarCali.EditorTools
             public string add;      // components added to the character when play starts, by type name (';')
             public string disable;  // components switched off when play starts, by type name (';')
             public bool batch;
+            public bool poses;      // end with pictures beside Malbers' own Steve (-livePoses)
+            public bool posesOnly;  // only those, once the player has settled (-livePosesOnly)
+            public bool movement;   // only the movement measurements, once settled (-liveMovement)
             public string folder;
             public double requestedAt;
         }
@@ -93,6 +99,28 @@ namespace CollarCali.EditorTools
 
             EditorApplication.update -= Tick;
             EditorApplication.update += Tick;
+        }
+
+        /// <summary>
+        /// The game's player on an empty floor, through the whole check, then pictures of it beside
+        /// Malbers' own Steve in the same poses (see the Poses part). Leaves the floor scene open.
+        /// </summary>
+        [MenuItem(MenuRoot + "Pose Pictures (next to Malbers' Steve)")]
+        static void PosesFromMenu()
+        {
+            if (EditorApplication.isPlaying)
+            {
+                EditorUtility.DisplayDialog("Pose Pictures", "Stop play mode first.", "OK");
+                return;
+            }
+
+            if (!EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo())
+                return;
+
+            string player = ThirdPersonPlayerBuilder.PrefabPath;
+            if (!BuildFloorScene(player))
+                return;
+            Start(new Job { scene = "", player = player, poses = true, batch = false });
         }
 
         [MenuItem(MenuRoot + "Live Check (play the open scene)")]
@@ -119,6 +147,9 @@ namespace CollarCali.EditorTools
                 noIK = Environment.GetCommandLineArgs().Contains("-liveNoIK"),
                 add = CharacterFitCheck.ArgValue("-liveAdd") ?? "",
                 disable = CharacterFitCheck.ArgValue("-liveDisable") ?? "",
+                poses = Environment.GetCommandLineArgs().Contains("-livePoses") || Environment.GetCommandLineArgs().Contains("-livePosesOnly"),
+                posesOnly = Environment.GetCommandLineArgs().Contains("-livePosesOnly"),
+                movement = Environment.GetCommandLineArgs().Contains("-liveMovement"),
                 batch = true,
             };
 
@@ -187,8 +218,9 @@ namespace CollarCali.EditorTools
             floor.transform.position = new Vector3(0f, -0.5f, 0f);
 
             PrefabUtility.InstantiatePrefab(player);
-            // ThirdPersonPlayer makes its own camera rig when play starts.
-            if (player.GetComponent<ThirdPersonPlayer>() == null)
+            // ThirdPersonPlayer makes its own camera rig when play starts. -liveExtraRig puts one in the
+            // scene as well, as a level that already holds a rig does.
+            if (player.GetComponent<ThirdPersonPlayer>() == null || Environment.GetCommandLineArgs().Contains("-liveExtraRig"))
                 PrefabUtility.InstantiatePrefab(rig);
             return true;
         }
@@ -252,10 +284,12 @@ namespace CollarCali.EditorTools
         /// <summary>Drives the character one Editor frame at a time and writes down what it does.</summary>
         partial class Probe
         {
-            enum Phase { Find, Settle, Stand, LookAside, FaceCamera, JumpStill, Rest1, WalkJump, Rest2, DoubleJump, Attack, MalbersMode, Melee, Rig, Done }
+            enum Phase { Find, Settle, Stand, LookAside, FaceCamera, JumpStill, Rest1, WalkJump, Rest2, DoubleJump, Attack, MalbersMode, Melee, Rig, Poses, Movement, Done }
 
             /// <summary>After the melee checks: ThirdPersonPlayer's own, when the player has one.</summary>
-            Phase AfterMelee => _tps != null ? Phase.Rig : Phase.Done;
+            Phase AfterMelee => _tps != null ? Phase.Rig : AfterChecks;
+
+            Phase AfterChecks => _job.poses ? Phase.Poses : Phase.Done;
 
             /// <summary>How far the body is turned from the camera to see the head follow it (degrees).</summary>
             const float AsideAngle = 40f;
@@ -415,14 +449,14 @@ namespace CollarCali.EditorTools
                             StateOwnership();
                             if (_tps != null)
                                 CheckRigStart();
-                            Enter(Phase.Stand);
+                            Enter(_job.posesOnly ? Phase.Poses : _job.movement ? Phase.Movement : Phase.Stand);
                         }
                         else if (InPhase > 6f)
                         {
                             _failures.Add($"Never settled on the ground: after 6 s it is in {StateName()} " +
                                           $"(grounded {_animal.Grounded}).");
                             _groundY = _animal.transform.position.y;
-                            Enter(Phase.Stand);
+                            Enter(_job.posesOnly ? Phase.Poses : _job.movement ? Phase.Movement : Phase.Stand);
                         }
 
                         break;
@@ -532,6 +566,16 @@ namespace CollarCali.EditorTools
 
                     case Phase.Rig:
                         if (StepRig())
+                            Enter(AfterChecks);
+                        break;
+
+                    case Phase.Poses:
+                        if (StepPoses())
+                            Enter(Phase.Done);
+                        break;
+
+                    case Phase.Movement:
+                        if (StepMovement())
                             Enter(Phase.Done);
                         break;
 
@@ -842,17 +886,17 @@ namespace CollarCali.EditorTools
                         return true;
                     }
 
-                    // ThirdPersonPlayer switches Malbers' attack modes off (the sword owns the attack
-                    // button); this one is switched back on until the melee checks are done with it.
+                    // A player with its attack modes off has this one switched back on until the checks
+                    // are done with it.
                     if (_tps != null && !_mode.Active)
                     {
                         _mode.Enable();
                         _modeReenabled = true;
-                        _notes.Add($"Switched Malbers' {_mode.ID.name} mode back on for the mode checks; ThirdPersonPlayer had it off.");
+                        _notes.Add($"Switched Malbers' {_mode.ID.name} mode back on for the mode checks; it was off.");
                     }
 
                     _modeStartedAt = Now;
-                    if (!_animal.Mode_TryActivate(_mode.ID.ID))
+                    if (!_animal.Mode_TryActivate(_mode.ID.ID, GroundAbility(_mode)))
                     {
                         _failures.Add($"Malbers' mode {_mode.ID.name} would not start.");
                         return true;
@@ -885,6 +929,23 @@ namespace CollarCali.EditorTools
                 }
 
                 return false;
+            }
+
+            /// <summary>
+            /// The mode's first ability that keeps the feet on the ground. Its air attacks carry Malbers'
+            /// Force Up modifier, which throws a standing character metres up: left to Malbers' random
+            /// pick, about half the runs played one.
+            /// </summary>
+            static int GroundAbility(Mode mode)
+            {
+                foreach (var ability in mode.Abilities)
+                {
+                    if (ability != null && ability.Active &&
+                        !(ability.modifier is ModifierForce force && force.Direction.Value.y >= 0.5f))
+                        return ability.Index.Value;
+                }
+
+                return -99;
             }
 
             static Vector3 Mean(List<Vector3> points)
@@ -1181,6 +1242,10 @@ namespace CollarCali.EditorTools
                 md.AppendLine();
                 WriteMelee(md);
                 WriteRig(md);
+                WritePoses(md);
+                WriteHands(md);
+                WriteClimb(md);
+                WriteMovement(md);
 
                 md.AppendLine("## Log");
                 md.AppendLine($"- {_logErrors} errors and {_logWarnings} warnings while playing" + (_log.Count > 0 ? "; the most frequent:" : "."));

@@ -11,9 +11,10 @@ namespace CollarCali
     {
         /// <summary>
         /// Malbers' inputs muted while something is held: both mouse buttons, the action keys,
-        /// interact and Q - and R and the mouse wheel, which turn and tilt a held prop.
+        /// interact and Q - and R and the mouse wheel, which turn and tilt a held prop - and the
+        /// holster keys, so no weapon is drawn mid-carry.
         /// </summary>
-        public const string CarryBlockedInputs = "Action1,Action2,Action3,Action4,Interact,Ability1,Reload,Zoom,LockNextTarget";
+        public const string CarryBlockedInputs = "Action1,Action2,Action3,Action4,Interact,Ability1,Reload,Zoom,LockNextTarget,Holster1,Holster2,Holster3";
 
         /// <summary>Muted while a body is merely targeted, so E lifts it and nothing else.</summary>
         public const string InteractInput = "Interact";
@@ -49,6 +50,7 @@ namespace CollarCali
             _carrying = carrying;
             _carrySpeed = carrying ? Mathf.Clamp(speedMultiplier, 0.05f, 1f) : 1f;
             ApplyCarrySlowdown();
+            MuteCameraZoom(carrying);
 
             var locks = Locks;
             if (locks == null)
@@ -57,6 +59,7 @@ namespace CollarCali
                 locks.Mute(_carryKeys, CarryBlockedInputs);
             else
                 locks.Unmute(_carryKeys, CarryBlockedInputs);
+            SyncAttackKeys();
         }
 
         /// <summary>
@@ -106,9 +109,45 @@ namespace CollarCali
             }
         }
 
+        readonly System.Collections.Generic.List<Behaviour> _mutedZoom = new System.Collections.Generic.List<Behaviour>();
+
+        /// <summary>
+        /// While carrying, the mouse wheel turns the held prop. The shoulder camera reads the wheel for
+        /// its zoom straight from the input actions (MInputLinkLook), past the character's muted keys,
+        /// so its zoom is switched off for the carry and back on after.
+        /// </summary>
+        void MuteCameraZoom(bool mute)
+        {
+            if (mute)
+            {
+                if (_mutedZoom.Count > 0 || cameraRig == null)
+                    return;
+                foreach (var zoom in cameraRig.GetComponentsInChildren<MalbersAnimations.ThirdPersonFollowZoom>(true))
+                {
+                    if (!zoom.enabled)
+                        continue;
+                    zoom.enabled = false;
+                    _mutedZoom.Add(zoom);
+                }
+
+                return;
+            }
+
+            foreach (var zoom in _mutedZoom)
+            {
+                if (zoom != null)
+                    zoom.enabled = true;
+            }
+
+            _mutedZoom.Clear();
+        }
+
+        /// <summary>The shoulder camera's zoom is off for a carry.</summary>
+        public bool IsCameraZoomMuted => _mutedZoom.Count > 0;
+
         /// <summary>
         /// True in the frame carrying ended and the one after: the click that throws must not also
-        /// swing the sword, whichever of the two reads the mouse first.
+        /// attack, whichever of the two reads the mouse first.
         /// </summary>
         bool JustStoppedCarrying => Time.frameCount - _carryEndedFrame <= 1;
     }

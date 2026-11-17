@@ -63,10 +63,15 @@ namespace CollarCali
         float _fellAt = -1f;
         bool _coyoteGiven;
 
+        // Landing: when the feet last came down from a jump or a fall.
+        const float LandingStopWindow = 0.3f;
+        bool _wasAirborne;
+        float _landedAt = -1f;
+
         /// <summary>Everything an applied arc depends on, to tell when it has to be solved again.</summary>
         struct Snapshot
         {
-            public float JumpHeight, AirTime, DoubleHeight, DoubleAirTime, DoubleDelay, Turn, Smoothing;
+            public float JumpHeight, AirTime, DoubleHeight, DoubleAirTime, DoubleDelay, Turn, Smoothing, AirSpeed;
             public int Jumps;
             public float Gravity, TimeMultiplier, Scale, Step;
 
@@ -79,6 +84,7 @@ namespace CollarCali
                 Mathf.Approximately(DoubleDelay, other.DoubleDelay) &&
                 Mathf.Approximately(Turn, other.Turn) &&
                 Mathf.Approximately(Smoothing, other.Smoothing) &&
+                Mathf.Approximately(AirSpeed, other.AirSpeed) &&
                 Mathf.Approximately(Gravity, other.Gravity) &&
                 Mathf.Approximately(TimeMultiplier, other.TimeMultiplier) &&
                 Mathf.Approximately(Scale, other.Scale) &&
@@ -93,8 +99,43 @@ namespace CollarCali
             _wasJumping = false;
             _fellAt = -1f;
             _coyoteGiven = false;
+            _wasAirborne = false;
+            _landedAt = -1f;
             if (Resolve())
                 SetInstantTakeoff(false);
+        }
+
+        /// <summary>
+        /// Malbers carries the fall's speed into the landing and eases it off over a second or more: let
+        /// go of the stick as the feet came down and the body slid on 1.4 m (a run stops in 0.5 m). For a
+        /// moment after landing, while the stick is let go, that carried speed is dropped instead.
+        /// </summary>
+        void FixedUpdate()
+        {
+            if (_animal == null || _animal.ActiveStateID == null)
+                return;
+
+            int state = _animal.ActiveStateID.ID;
+            if (state == StateEnum.Jump || state == StateEnum.Fall)
+            {
+                _wasAirborne = true;
+                _landedAt = -1f;
+                return;
+            }
+
+            if (_wasAirborne && (state == StateEnum.Idle || state == StateEnum.Locomotion))
+            {
+                _wasAirborne = false;
+                _landedAt = Time.time;
+            }
+
+            if (_landedAt < 0f || Time.time - _landedAt > LandingStopWindow)
+                return;
+            if (!PlayerTuning.Active.thirdPersonJump.stopOnLanding || _animal.MovementDetected)
+                return;
+
+            _animal.InertiaPositionSpeed = Vector3.zero;
+            _animal.MovementAxisSmoothed = Vector3.zero;
         }
 
         void OnDisable()
@@ -288,6 +329,7 @@ namespace CollarCali
                 DoubleDelay = settings.doubleJumpDelay,
                 Turn = settings.airTurnSpeed,
                 Smoothing = settings.airSmoothing,
+                AirSpeed = settings.airSpeed,
                 Jumps = Mathf.Max(1, settings.jumps),
                 Gravity = BaseGravity(),
                 TimeMultiplier = Mathf.Max(0.01f, _animal.TimeMultiplier),
@@ -324,6 +366,7 @@ namespace CollarCali
                 _jump.DoubleJumpTime = Local(_jump.DoubleJumpTime, at.DoubleDelay);
                 _jump.AirRotation = Local(_jump.AirRotation, at.Turn);
                 _jump.AirSmooth = Local(_jump.AirSmooth, at.Smoothing);
+                _jump.AirMovement = Local(_jump.AirMovement, at.AirSpeed);
 
                 bool ground = Solve(at.JumpHeight, at.AirTime, startStep, at, out var push, out var power, out var rise);
                 for (int i = 0; i < _jump.profiles.Count; i++)
@@ -365,6 +408,9 @@ namespace CollarCali
                 _fall.AirControl = Local(_fall.AirControl, true);
                 _fall.AirRotation = Local(_fall.AirRotation, at.Turn);
                 _fall.AirSmooth = Local(_fall.AirSmooth, at.Smoothing);
+                // Malbers' stock fall builds no speed of its own: from the top of a standing jump the stick
+                // could only turn the body, not move it.
+                _fall.AirMovement = Local(_fall.AirMovement, at.AirSpeed);
             }
         }
 

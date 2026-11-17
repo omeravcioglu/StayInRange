@@ -17,8 +17,8 @@ namespace CollarCali.EditorTools
     ///   - the main camera's distance, shoulder offset and damping. The distance is written on Malbers'
     ///     ThirdPersonFollowTarget too, which sets Cinemachine's from its own value on Awake;
     ///   - no noise: Malbers ships a handheld shake on every camera;
-    ///   - every camera stays in front of walls on the profile's surface layers (CM3 only sees
-    ///     Default, with a 1 mm radius on the main camera).
+    ///   - the cameras keep their distance instead of jumping in front of what comes between them and
+    ///     the player: CameraOccluderFade on the brain dissolves it away (the profile's surface layers).
     /// The camera target's height belongs to the character (Malbers' CM Main Target), so
     /// PlayerCharacterBuilder sets it. Running this again rewrites the same overrides.
     /// </summary>
@@ -26,6 +26,7 @@ namespace CollarCali.EditorTools
     {
         const string BaseGuid = "97ae43971f3549145bbc254732633bed";   // Malbers Cameras CM3
         const string MainCameraName = "CM Third Person Main (New Input)";
+        const string OccluderShaderPath = "Assets/_Integration/Rendering/OccluderDissolve.shader";
 
         [MenuItem(CharacterFitCheck.MenuRoot + "Build Player Camera Rig")]
         static void BuildFromMenu()
@@ -120,12 +121,25 @@ namespace CollarCali.EditorTools
                     sb.AppendLine($"  {follow.name}: distance {numbers.distance}, shoulder {numbers.shoulder}, damping {numbers.damping}.");
                 }
 
+                // No jumping in front of walls: what comes in between fades instead (CameraOccluderFade).
                 var avoid = follow.AvoidObstacles;
-                avoid.Enabled = true;
+                avoid.Enabled = false;
                 avoid.CollisionFilter = profile.surfaces;
                 avoid.CameraRadius = numbers.collisionRadius;
                 follow.AvoidObstacles = avoid;
                 PlayerRigAssets.Record(follow);
+            }
+
+            var shader = AssetDatabase.LoadAssetAtPath<Shader>(OccluderShaderPath);
+            foreach (var brain in root.GetComponentsInChildren<CinemachineBrain>(true))
+            {
+                var fade = brain.GetComponent<CameraOccluderFade>();
+                if (fade == null)
+                    fade = brain.gameObject.AddComponent<CameraOccluderFade>();
+                fade.dissolveShader = shader;
+                fade.layers = profile.surfaces;
+                PlayerRigAssets.Record(fade);
+                sb.AppendLine($"  {brain.name}: CameraOccluderFade (layers {profile.surfaces.value}, shader {(shader != null ? shader.name : "MISSING")}).");
             }
 
             if (!foundMain)
@@ -138,6 +152,19 @@ namespace CollarCali.EditorTools
                 avoid.CameraRadius = numbers.collisionRadius;
                 deoccluder.AvoidObstacles = avoid;
                 PlayerRigAssets.Record(deoccluder);
+            }
+
+            // Malbers' sprint camera pulls the view back while sprinting. The game never used that zoom, and
+            // the camera keeps its own pivot: a second rig in a level left it facing the wrong way, and on
+            // sprinting it took over and turned the player round. Switched off in the rig itself, so every
+            // copy - a level's own included - is without it.
+            foreach (var vcam in root.GetComponentsInChildren<CinemachineCamera>(true))
+            {
+                if (vcam.name.IndexOf("Sprint", System.StringComparison.OrdinalIgnoreCase) < 0 || !vcam.gameObject.activeSelf)
+                    continue;
+                vcam.gameObject.SetActive(false);
+                PlayerRigAssets.Record(vcam.gameObject);
+                sb.AppendLine($"  {vcam.name}: switched off (sprint camera).");
             }
 
             int noises = 0;

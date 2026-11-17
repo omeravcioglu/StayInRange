@@ -87,10 +87,18 @@ namespace CollarCali
             [Header("Control")]
             [Tooltip("How quickly the character turns towards the input while in the air. On Malbers' " +
                      "scale: its stock jump used 15 and its fall 10.")]
-            [Range(1f, 60f)] public float airTurnSpeed = 30f;
+            [Range(1f, 120f)] public float airTurnSpeed = 60f;
 
             [Tooltip("How quickly speed in the air follows the input. Higher is snappier, lower floatier.")]
-            [Range(1f, 30f)] public float airSmoothing = 10f;
+            [Range(1f, 40f)] public float airSmoothing = 20f;
+
+            [Tooltip("Top speed the stick can build up in the air from a standstill, in m/s: in the jump " +
+                     "and, unlike Malbers' stock fall, on the way down too. A running jump keeps its own speed.")]
+            [Range(0f, 10f)] public float airSpeed = 5f;
+
+            [Tooltip("Landing with the stick let go stops the body where the feet land, instead of sliding " +
+                     "on with the speed the fall carried.")]
+            public bool stopOnLanding = true;
 
             [Tooltip("Leave the ground the moment jump is pressed, instead of a third of the way into " +
                      "the jump animation.")]

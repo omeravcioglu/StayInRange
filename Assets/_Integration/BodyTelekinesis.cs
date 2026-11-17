@@ -195,20 +195,29 @@ namespace CollarCali
             UpdateFeedback();
         }
 
+        /// <summary>The target E was claimed for at the end of the last frame.</summary>
+        ITelekineticTarget _claimedLastFrame;
+
         void UpdateIdle()
         {
             _charging = false;
 
             // On a ladder the crosshair is on the ladder itself, and E must not lift it from under you.
-            if (_rig.IsClimbing)
+            // Next to one, E is the ladder's: Malbers climbs it with the same key.
+            if (_rig.IsClimbing || (_rig is ThirdPersonPlayer player && player.LadderInReach))
             {
                 _target = null;
+                _claimedLastFrame = null;
                 return;
             }
 
+            var claimed = _claimedLastFrame;
             FindTarget(out _target, out _targetIsCatch);
+            _claimedLastFrame = _target;
 
-            if (_target != null && _pending == null && Pressed(_interact) && InputAllowed())
+            // Only something E was already claimed for: in the first frame a target turns up, the key is
+            // still Malbers' too, and one press would both lift it and use whatever Malbers had in reach.
+            if (_target != null && ReferenceEquals(_target, claimed) && _pending == null && Pressed(_interact) && InputAllowed())
             {
                 _pending = _target;
                 _pendingCatch = _targetIsCatch;

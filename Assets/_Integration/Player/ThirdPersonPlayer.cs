@@ -11,9 +11,10 @@ using UnityEngine.InputSystem;
 namespace CollarCali
 {
     /// <summary>
-    /// The player in the third-person-only game. Malbers' MAnimal moves the body, Game Creator 2 Melee
-    /// swings the sword through MAnimalGC2Bridge, and Malbers' Cinemachine rig films it. The rest of
-    /// the game reaches it through IPlayerRig: telekinesis, the collar, the HUD, pause, enemies that
+    /// The player in the third-person-only game: Malbers' own third-person controller. Its MAnimal
+    /// moves the body, its weapon manager and combos fight (fists, and the sword from its holster),
+    /// and its Cinemachine rig films it. This component only connects it to the rest of the game,
+    /// which reaches it through IPlayerRig: telekinesis, the collar, the HUD, pause, enemies that
     /// grab. It takes over the third-person half of DualPlayerController. There is no first person
     /// and no switching between views.
     ///
@@ -22,26 +23,36 @@ namespace CollarCali
     /// that films it is the one assigned, or a copy of the camera rig prefab made when play starts
     /// (and removed with the player).
     ///
-    /// Everything that stops the character - a sword swing, a menu, being downed - goes through the
-    /// character's shared lock set (MAnimalLocks), so one letting go never frees the character while
-    /// another still holds it. Inputs other systems need to themselves are muted there too.
+    /// Everything that stops the character - a menu, being downed - goes through the character's
+    /// shared lock set (MAnimalLocks), so one letting go never frees the character while another still
+    /// holds it. Inputs other systems need to themselves are muted there too.
     ///
     /// Parts: this file (start-up, Malbers, the camera, where the player is), .AimView (the throw aim
     /// view), .Carry (carrying, and the keys telekinesis claims), .Hold (menus and being downed) and
-    /// .Combat (the sword).
+    /// .Combat (Malbers' weapons and fists against the game's enemies).
     /// </summary>
     [DisallowMultipleComponent]
     [RequireComponent(typeof(MAnimal))]
     public partial class ThirdPersonPlayer : MonoBehaviour, IPlayerRig
     {
-        [Tooltip("The camera rig in the scene that films this player. Empty: a copy of Camera Rig Prefab is made when play starts.")]
+        [Tooltip("The camera rig in the scene that films this player. Empty: a Malbers camera rig already in the scene " +
+                 "is used, or else a copy of Camera Rig Prefab is made when play starts.")]
         [SerializeField] GameObject cameraRig;
+
+        /// <summary>Camera rigs a player films with, so two players never share one.</summary>
+        static readonly HashSet<GameObject> ClaimedRigs = new HashSet<GameObject>();
 
         [Tooltip("Copied when play starts if no Camera Rig is assigned: Characters/Player/PlayerCameraRig (CM3).")]
         [SerializeField] GameObject cameraRigPrefab;
 
-        /// <summary>Height of the chest above the feet: where carrying and aiming start from.</summary>
+        /// <summary>
+        /// Height of the chest above the feet, where carrying and aiming start from, for a character
+        /// without a "Socket Chest" (PlayerCharacterBuilder puts one on this body's chest).
+        /// </summary>
         const float ChestHeight = 1.35f;
+
+        /// <summary>The body's chest socket: where carrying and aiming start from.</summary>
+        const string ChestSocketName = "Socket Chest";
 
         /// <summary>A teleport further than this snaps the camera to the player rather than letting it glide there.</summary>
         const float CameraSnapDistance = 2f;
@@ -65,7 +76,11 @@ namespace CollarCali
 
         readonly Hold _downedHold = new Hold("downed");
         readonly Hold _pauseKey = new Hold("pause key");
+        readonly Hold _creepHold = new Hold("held by a creep");
 
+        PlayerVitals _vitals;
+        bool _heldByCreep;
+        Transform _chest;
         MAnimal _animal;
         MInputLink _link;
         TransformHook[] _hooks;
@@ -126,11 +141,61 @@ namespace CollarCali
         /// <summary>The network bridge of this player, on its owner's machine. Null offline.</summary>
         public PlayerNetworkBridge NetworkBridge => _bridge;
 
+        /// <summary>
+        /// This player's health. In a session the bridge routes damage through it to the owner's
+        /// machine and mirrors health and death to everyone; offline damage applies straight away.
+        /// Made when the character wakes, so every copy of the prefab has one.
+        /// </summary>
+        public PlayerVitals Vitals
+        {
+            get
+            {
+                if (_vitals == null)
+                    _vitals = GetComponent<PlayerVitals>();
+                if (_vitals == null)
+                    _vitals = gameObject.AddComponent<PlayerVitals>();
+                return _vitals;
+            }
+        }
+
         /// <summary>The character's shared lock set.</summary>
         MAnimalLocks Locks => MAnimalLocks.Of(Animal);
 
         /// <summary>Called by PlayerNetworkBridge when it makes this player for its owner.</summary>
-        public void BindNetworkOwner(PlayerNetworkBridge bridge) => _bridge = bridge;
+        public void BindNetworkOwner(PlayerNetworkBridge bridge)
+        {
+            _bridge = bridge;
+            // Damage taken anywhere goes to the owner's machine and is mirrored from there.
+            Vitals.Router = bridge;
+        }
+
+        /// <summary>
+        /// A creep has this player in its grip (PlayerNetworkBridge carries the body along with it):
+        /// no moving, no input and no attacks until it lets go. Anything held is dropped.
+        /// </summary>
+        public void SetHeldByCreep(bool held)
+        {
+            if (held == _heldByCreep)
+                return;
+            _heldByCreep = held;
+
+            var locks = Locks;
+            if (held)
+            {
+                EndAimViewImmediate();
+                StopAttacks();
+                locks?.Lock(_creepHold, movement: true, input: true);
+            }
+            else
+            {
+                locks?.Release(_creepHold);
+            }
+
+            SyncAttackKeys();
+        }
+
+        /// <summary>A creep has this player in its grip.</summary>
+        public bool IsHeldByCreep => _heldByCreep;
 
         /// <summary>
         /// The camera rig to film with, when the one to use already exists (a scene's own rig). Only
@@ -150,6 +215,29 @@ namespace CollarCali
             _animal = GetComponent<MAnimal>();
             _link = GetComponent<MInputLink>();
             _hooks = GetComponentsInChildren<TransformHook>(true);
+            _ = Vitals;
+            foreach (var t in GetComponentsInChildren<Transform>(true))
+            {
+                if (t.name == ChestSocketName)
+                {
+                    _chest = t;
+                    break;
+                }
+            }
+        }
+
+        /// <summary>
+        /// A ladder is in reach: Malbers' ladder has been offered one, so E climbs it. Telekinesis
+        /// leaves E alone meanwhile, rather than lifting something in front of the ladder.
+        /// </summary>
+        public bool LadderInReach
+        {
+            get
+            {
+                var animal = Animal;
+                var ladder = animal != null ? animal.State_Get<MalbersAnimations.Ladder>() : null;
+                return ladder != null && ladder.MLadder != null;
+            }
         }
 
         void OnEnable() => PlayerRigs.Register(this);
@@ -164,8 +252,8 @@ namespace CollarCali
 
             // The rig's follow targets find the character's camera target as both wake up. Bound again
             // and snapped once they have, so the shoulder camera starts settled behind the player
-            // instead of gliding in from wherever the rig was made. The input link has finished
-            // starting by now too, and Game Creator's character is ready for a weapon.
+            // instead of gliding in from wherever the rig was made. The input link and Malbers'
+            // weapon manager have finished starting by now too.
             yield return null;
             BindCamera();
             SnapCameras();
@@ -182,6 +270,8 @@ namespace CollarCali
         void OnDestroy()
         {
             EndAimViewImmediate();
+            if (cameraRig != null)
+                ClaimedRigs.Remove(cameraRig);
             if (_ownsCameraRig && cameraRig != null)
                 Destroy(cameraRig);
         }
@@ -190,6 +280,16 @@ namespace CollarCali
 
         void EnsureCameraRig()
         {
+            if (cameraRig == null)
+            {
+                cameraRig = FindSceneRig();
+                if (cameraRig != null)
+                {
+                    _ownsCameraRig = false;
+                    _brain = null;
+                }
+            }
+
             if (cameraRig == null && cameraRigPrefab != null)
             {
                 cameraRig = Instantiate(cameraRigPrefab);
@@ -204,9 +304,33 @@ namespace CollarCali
                 return;
             }
 
+            ClaimedRigs.Add(cameraRig);
             cameraRig.SetActive(true);
             DisableSprintCameraZoom();
             WarnAboutOtherMainCameras();
+        }
+
+        /// <summary>
+        /// A Malbers third-person camera rig already in the scene that no player films with, to use
+        /// instead of making a second one. With two rigs both filmed at once, and the second one's sprint
+        /// camera - never switched off by this player - took over on sprinting, still facing wherever it
+        /// was left: the player turned round and ran the other way.
+        /// </summary>
+        static GameObject FindSceneRig()
+        {
+            foreach (var brain in FindObjectsByType<CinemachineBrain>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+            {
+                if (brain == null || !brain.gameObject.scene.IsValid())
+                    continue;
+                var root = brain.transform.root.gameObject;
+                if (ClaimedRigs.Contains(root) || root.GetComponentInChildren<ThirdPersonFollowTarget>(true) == null)
+                    continue;
+                if (root.GetComponentInChildren<ThirdPersonPlayer>(true) != null)
+                    continue;
+                return root;
+            }
+
+            return null;
         }
 
         /// <summary>
@@ -376,7 +500,6 @@ namespace CollarCali
             }
 
             TuneOnce();
-            RemoveMalbersAttacks();
             BindCamera();
 
             // Escape is the game's own pause menu. Malbers' pause froze time and freed the cursor
@@ -494,26 +617,6 @@ namespace CollarCali
             }
         }
 
-        /// <summary>
-        /// The sword owns the attack buttons, so Malbers' own unarmed attacks are switched off at the
-        /// source: every attack mode, and the combo manager that started them from a click.
-        /// </summary>
-        void RemoveMalbersAttacks()
-        {
-            var animal = Animal;
-            if (animal == null)
-                return;
-
-            foreach (var mode in animal.modes)
-            {
-                if (mode?.ID != null && mode.ID.name.Contains("Attack"))
-                    mode.Disable();
-            }
-
-            foreach (var combos in GetComponentsInChildren<ComboManager>(true))
-                combos.enabled = false;
-        }
-
         // ---- Where the player is -----------------------------------------------------------------
 
         /// <summary>The player's feet: Malbers' root sits at the feet.</summary>
@@ -596,8 +699,8 @@ namespace CollarCali
             var brain = Brain;
             if (brain != null)
                 forward = brain.transform.forward;
-            origin = _aimEyeLive && _aimEyeCamera != null
-                ? _aimEyeCamera.transform.position
+            origin = _aimEyeLive && _aimEyeCamera != null ? _aimEyeCamera.transform.position
+                : _chest != null ? _chest.position
                 : transform.position + Vector3.up * ChestHeight;
             return true;
         }

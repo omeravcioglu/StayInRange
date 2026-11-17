@@ -6,8 +6,9 @@ namespace CollarCali.Diagnostics
 {
     /// <summary>
     /// A stand-in enemy for melee checks, built like a zombie's hitboxes: trigger colliders on the
-    /// Enemy layer - a body tagged BodyShot and a head tagged Critical - each open to Game Creator's
-    /// melee (TeamCanHit), over a health that never dies and only counts what it takes.
+    /// Enemy layer - a body tagged BodyShot and a head tagged Critical - open to Malbers' weapons and
+    /// fists (MalbersHitRelay on the root) and Game Creator's melee (TeamCanHit), over a health that
+    /// never dies and only counts what it takes.
     /// CharacterLiveCheck makes them; leave them out of scenes.
     /// </summary>
     [AddComponentMenu("")]
@@ -46,6 +47,7 @@ namespace CollarCali.Diagnostics
             var root = new GameObject(name);
             root.transform.SetPositionAndRotation(position, rotation);
             var dummy = root.AddComponent<MeleeTestDummy>();
+            root.AddComponent<MalbersHitRelay>();
             int layer = LayerMask.NameToLayer("Enemy");
 
             if (body)
