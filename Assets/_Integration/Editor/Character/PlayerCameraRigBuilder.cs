@@ -18,7 +18,10 @@ namespace CollarCali.EditorTools
     ///     ThirdPersonFollowTarget too, which sets Cinemachine's from its own value on Awake;
     ///   - no noise: Malbers ships a handheld shake on every camera;
     ///   - the cameras keep their distance instead of jumping in front of what comes between them and
-    ///     the player: CameraOccluderFade on the brain dissolves it away (the profile's surface layers).
+    ///     the player: CameraOccluderFade on the brain dissolves it away (the profile's surface layers);
+    ///   - but they never go into the ground: with obstacle avoidance off, looking up took the camera
+    ///     through the floor. CameraGroundCollider on every shoulder camera pulls it in above floors,
+    ///     step tops and terrain (the same layers, the camera radius); walls and ceilings still fade.
     /// The camera target's height belongs to the character (Malbers' CM Main Target), so
     /// PlayerCharacterBuilder sets it. Running this again rewrites the same overrides.
     /// </summary>
@@ -128,6 +131,18 @@ namespace CollarCali.EditorTools
                 avoid.CameraRadius = numbers.collisionRadius;
                 follow.AvoidObstacles = avoid;
                 PlayerRigAssets.Record(follow);
+
+                // That left nothing keeping the camera out of the floor when the player looks up (at the
+                // 6.5 m distance and Malbers' -30 degree clamp it sank 1.6 m under the feet). The ground alone
+                // pulls it in; walls and ceilings are still left to the fade.
+                var ground = follow.GetComponent<CameraGroundCollider>();
+                if (ground == null)
+                    ground = follow.gameObject.AddComponent<CameraGroundCollider>();
+                ground.layers = profile.surfaces;
+                ground.radius = numbers.collisionRadius;
+                PlayerRigAssets.Record(ground);
+                sb.AppendLine($"  {follow.name}: obstacle avoidance off; CameraGroundCollider (layers {profile.surfaces.value}, " +
+                              $"radius {numbers.collisionRadius} m, eases out over {ground.easeOut} s).");
             }
 
             var shader = AssetDatabase.LoadAssetAtPath<Shader>(OccluderShaderPath);
@@ -175,8 +190,8 @@ namespace CollarCali.EditorTools
                 noises++;
             }
 
-            sb.AppendLine($"  Walls on layers {LayerNames(profile.surfaces)} at radius {numbers.collisionRadius} m; " +
-                          $"noise {(numbers.noise ? "on" : "off")} on {noises} camera(s).");
+            sb.AppendLine($"  Walls fade and the cameras stay {numbers.collisionRadius} m above the ground, on layers " +
+                          $"{LayerNames(profile.surfaces)}; noise {(numbers.noise ? "on" : "off")} on {noises} camera(s).");
         }
 
         public static string LayerNames(LayerMask mask)

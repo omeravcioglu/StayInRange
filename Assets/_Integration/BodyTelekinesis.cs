@@ -802,11 +802,11 @@ namespace CollarCali
         /// <summary>
         /// The dead body or prop the crosshair is on, if it is in reach and nothing solid is in front of it.
         ///
-        /// A slightly fat ray (limbs are thin) from the camera actually rendering the view, through
-        /// every hit in order: this player's own colliders are skipped - in third person the ray
-        /// passes through the character first - and the first thing that is neither a body nor a prop
-        /// ends the search, so a wall between you and it blocks it. Range is measured from the player,
-        /// so the third-person camera sitting metres behind them does not eat into it.
+        /// A slightly fat ray (limbs are thin) along the middle of the screen, through every hit in
+        /// order. The rig starts it just past the player's own depth, so a wall dissolved between the
+        /// camera and the player does not block it. This player's own colliders are skipped, and the
+        /// first thing that is neither a body nor a prop ends the search, so a wall between you and it
+        /// blocks it. Range is measured from the player.
         /// </summary>
         bool TryCrosshairTarget(out ITelekineticTarget target, out bool isCatch)
         {
@@ -819,8 +819,8 @@ namespace CollarCali
             var tuning = PlayerTuning.Active;
             float reach = Mathf.Max(tuning.carry.aimPickupDistance, tuning.catching.maxCatchDistance);
 
-            // How far along the ray the player stands: zero in first person, the camera's distance
-            // behind the character in third person.
+            // How far along the ray the player stands. The rig's ray already starts past the player,
+            // so this is normally zero; it stays for a rig whose ray starts at the camera.
             float behind = 0f;
             if (_rig.TryGetAim(out var origin, out _))
                 behind = Mathf.Max(0f, Vector3.Dot(origin - ray.origin, ray.direction));

@@ -33,6 +33,7 @@ namespace CollarCali
 
         Animator _animator;
         MAnimal _animal;
+        CharacterVisualInterpolator _smoother;
         Climb _climb;
         float _weight;
 
@@ -58,6 +59,7 @@ namespace CollarCali
         {
             _animator = GetComponent<Animator>();
             _animal = GetComponent<MAnimal>();
+            _smoother = GetComponent<CharacterVisualInterpolator>();
         }
 
         void LateUpdate()
@@ -84,8 +86,9 @@ namespace CollarCali
             if (upper == null || lower == null || hand == null)
                 return;
 
-            // The wall in front of the hand: a climber faces its wall.
-            var forward = transform.forward;
+            // The wall in front of the hand: a climber faces its wall. The body is drawn turned as the
+            // smoothed root is, which can lag the root itself by up to a physics step.
+            var forward = (_smoother != null ? _smoother.ShownRotation : transform.rotation) * Vector3.forward;
             var wrist = hand.position;
             if (!Physics.Raycast(wrist - forward * 0.4f, forward, out var hit, 0.8f, walls, QueryTriggerInteraction.Ignore))
                 return;

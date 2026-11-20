@@ -113,7 +113,7 @@ namespace CollarCali
             public Vector3 damping = new Vector3(0.1f, 0.25f, 0.2f);
             [Tooltip("Camera shake from Cinemachine noise. Off by default: the follow is smooth on its own.")]
             public bool noise;
-            [Tooltip("How close the camera may get to a wall before it is pushed in front of it (m).")]
+            [Tooltip("How far the camera stays above the ground it would otherwise sink into (CameraGroundCollider). Walls between the camera and the player dissolve instead (m).")]
             [Range(0.01f, 1f)] public float collisionRadius = 0.15f;
         }
 

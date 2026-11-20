@@ -35,8 +35,9 @@ namespace CollarCali
     [RequireComponent(typeof(MAnimal))]
     public partial class ThirdPersonPlayer : MonoBehaviour, IPlayerRig
     {
-        [Tooltip("The camera rig in the scene that films this player. Empty: a Malbers camera rig already in the scene " +
-                 "is used, or else a copy of Camera Rig Prefab is made when play starts.")]
+        [Tooltip("The camera rig in the scene that films this player. Empty: the team's camera rig already in the scene " +
+                 "(PlayerCameraRig (CM3)) is used, or else a copy of Camera Rig Prefab is made when play starts. Any other " +
+                 "Malbers camera rig that is on is switched off.")]
         [SerializeField] GameObject cameraRig;
 
         /// <summary>Camera rigs a player films with, so two players never share one.</summary>
@@ -56,6 +57,12 @@ namespace CollarCali
 
         /// <summary>A teleport further than this snaps the camera to the player rather than letting it glide there.</summary>
         const float CameraSnapDistance = 2f;
+
+        /// <summary>
+        /// How far in front of the chest the crosshair ray starts (m): a fat ray started any further back
+        /// would already overlap a wall right behind the player's back, and stop on it.
+        /// </summary>
+        const float CrosshairStartAhead = 0.1f;
 
         /// <summary>
         /// Malbers' Aim looks up its Camera component once, when it wakes, and again only when a
@@ -305,32 +312,141 @@ namespace CollarCali
             }
 
             ClaimedRigs.Add(cameraRig);
+            SwitchOffOtherRigs();
+            CompleteCameraRig();
             cameraRig.SetActive(true);
             DisableSprintCameraZoom();
             WarnAboutOtherMainCameras();
         }
 
         /// <summary>
-        /// A Malbers third-person camera rig already in the scene that no player films with, to use
-        /// instead of making a second one. With two rigs both filmed at once, and the second one's sprint
-        /// camera - never switched off by this player - took over on sprinting, still facing wherever it
-        /// was left: the player turned round and ran the other way.
+        /// The team's camera rig already in the scene - a level's own copy of PlayerCameraRig (CM3), told
+        /// apart by the CameraOccluderFade on its brain - that no player films with, switched on or off, to
+        /// use instead of making a second one (one that is on comes first). Malbers' stock Cameras CM3 is
+        /// never used: none of the rig's tuning is on it (its brain moves the camera once per physics step,
+        /// its cameras shake, nothing fades), and Game.unity keeps one, switched off, for its offline player.
         /// </summary>
         static GameObject FindSceneRig()
         {
+            GameObject switchedOff = null;
             foreach (var brain in FindObjectsByType<CinemachineBrain>(FindObjectsInactive.Include, FindObjectsSortMode.None))
             {
-                if (brain == null || !brain.gameObject.scene.IsValid())
+                if (brain == null || !brain.gameObject.scene.IsValid() || brain.GetComponent<CameraOccluderFade>() == null)
                     continue;
-                var root = brain.transform.root.gameObject;
-                if (ClaimedRigs.Contains(root) || root.GetComponentInChildren<ThirdPersonFollowTarget>(true) == null)
+                var rig = RigOf(brain);
+                if (rig == null || IsClaimed(rig) || rig.GetComponentInChildren<ThirdPersonPlayer>(true) != null)
                     continue;
-                if (root.GetComponentInChildren<ThirdPersonPlayer>(true) != null)
+                if (rig.activeInHierarchy)
+                    return rig;
+                // Off itself, not under something that is off (a level's offline group): switching the rig on
+                // would not undo that, and the player would film with nothing.
+                var parent = rig.transform.parent;
+                if (switchedOff == null && (parent == null || parent.gameObject.activeInHierarchy))
+                    switchedOff = rig;
+            }
+
+            return switchedOff;
+        }
+
+        /// <summary>
+        /// Every other Malbers camera rig that is on is switched off, so only this player's films. With two,
+        /// both filmed at once and the other one's cameras could take the screen: its sprint camera - never
+        /// switched off by this player - did on sprinting, still facing wherever it was left, and the player
+        /// turned round and ran the other way. Rigs that are off stay off, a rig another player films with
+        /// is left to it, and one that holds more than cameras (level objects, a character) is only warned
+        /// about, never switched off with them.
+        /// </summary>
+        void SwitchOffOtherRigs()
+        {
+            foreach (var brain in FindObjectsByType<CinemachineBrain>(FindObjectsInactive.Exclude, FindObjectsSortMode.None))
+            {
+                // Off already: its rig was switched off a moment ago, with another brain of it.
+                if (brain == null || !brain.gameObject.activeInHierarchy || !brain.gameObject.scene.IsValid())
                     continue;
-                return root;
+                // This player's own rig is claimed by now.
+                var rig = RigOf(brain);
+                if (rig == null || IsClaimed(rig))
+                    continue;
+
+                if (rig.GetComponentInChildren<ThirdPersonPlayer>(true) != null || rig.GetComponentInChildren<MAnimal>(true) != null ||
+                    rig.GetComponentInChildren<Renderer>(true) != null || rig.GetComponentInChildren<Collider>(true) != null)
+                {
+                    Debug.LogWarning("[ThirdPersonPlayer] '" + rig.name + "' is a second camera rig, so two rigs film at once, but it " +
+                                     "holds more than cameras and was left on. Keep the level's rig on its own, or remove it.", rig);
+                    continue;
+                }
+
+                rig.SetActive(false);
+                Debug.LogWarning("[ThirdPersonPlayer] Switched off the scene's camera rig '" + rig.name + "' so only one rig films" +
+                                 (brain.GetComponent<CameraOccluderFade>() == null
+                                     ? ": it is not the team's (no CameraOccluderFade on its brain). Use PlayerCameraRig (CM3) in levels, or none."
+                                     : "."), rig);
+            }
+        }
+
+        /// <summary>
+        /// The camera rig a brain belongs to: the smallest part of the scene that holds the brain and a
+        /// Malbers shoulder camera (a level may keep its rig under a grouping object). Null without such a
+        /// camera: then it is not a Malbers rig, and none of this player's business.
+        /// </summary>
+        static GameObject RigOf(CinemachineBrain brain)
+        {
+            for (var t = brain.transform; t != null; t = t.parent)
+            {
+                if (t.GetComponentInChildren<ThirdPersonFollowTarget>(true) != null)
+                    return t.gameObject;
             }
 
             return null;
+        }
+
+        /// <summary>A player films with this rig, with one inside it, or with one it is part of.</summary>
+        static bool IsClaimed(GameObject rig)
+        {
+            foreach (var claimed in ClaimedRigs)
+            {
+                if (claimed != null && (claimed == rig || claimed.transform.IsChildOf(rig.transform) || rig.transform.IsChildOf(claimed.transform)))
+                    return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Whatever rig films the player films the way the team's is built (PlayerCameraRigBuilder): no
+        /// shoulder camera jumps in front of what comes between it and the player, which dissolves instead
+        /// (CameraOccluderFade on the brain), and every shoulder camera stays above the ground
+        /// (CameraGroundCollider). A rig assigned in a level, or one built before these existed, gets what it
+        /// lacks here, on the layers this character walks on.
+        /// </summary>
+        void CompleteCameraRig()
+        {
+            var animal = Animal;
+            LayerMask ground = animal != null ? animal.GroundLayer : (LayerMask)1;
+
+            foreach (var follow in cameraRig.GetComponentsInChildren<CinemachineThirdPersonFollow>(true))
+            {
+                var avoid = follow.AvoidObstacles;
+                if (avoid.Enabled)
+                {
+                    avoid.Enabled = false;
+                    follow.AvoidObstacles = avoid;
+                }
+
+                if (follow.GetComponent<CameraGroundCollider>() == null)
+                    follow.gameObject.AddComponent<CameraGroundCollider>().layers = ground;
+            }
+
+            // Without obstacle avoidance a rig with nothing to dissolve walls would film them instead of the player.
+            var brain = Brain;
+            if (brain != null && brain.GetComponent<CameraOccluderFade>() == null)
+            {
+                var fade = brain.gameObject.AddComponent<CameraOccluderFade>();
+                var built = cameraRigPrefab != null ? cameraRigPrefab.GetComponentInChildren<CameraOccluderFade>(true) : null;
+                if (built != null && built.dissolveShader != null)
+                    fade.dissolveShader = built.dissolveShader;
+                fade.layers = ground;
+            }
         }
 
         /// <summary>
@@ -672,7 +788,12 @@ namespace CollarCali
         public bool OwnsCollider(Collider other) =>
             other != null && (other.transform == transform || other.transform.IsChildOf(transform));
 
-        /// <summary>The line through the middle of the screen, from the camera rendering it.</summary>
+        /// <summary>
+        /// The line through the middle of the screen, from the camera rendering it, starting level with
+        /// the player. The camera keeps its distance behind a wall rather than jumping in front of it (the
+        /// wall dissolves: CameraOccluderFade), but the wall's collider is still there: a ray from the
+        /// camera stopped on it before it reached anything in front of the player.
+        /// </summary>
         public bool TryGetCrosshairRay(out Ray ray)
         {
             ray = default;
@@ -680,7 +801,19 @@ namespace CollarCali
             if (_suspended || brain == null)
                 return false;
 
-            ray = new Ray(brain.transform.position, brain.transform.forward);
+            var view = brain.transform;
+            var origin = view.position;
+            var forward = view.forward;
+            // Where the player is along the view: the chest, or in the throw aim view the eyes, where the
+            // camera itself is then.
+            if (TryGetAim(out var player, out _))
+            {
+                float ahead = Vector3.Dot(player - origin, forward) + CrosshairStartAhead;
+                if (ahead > 0f)
+                    origin += forward * ahead;
+            }
+
+            ray = new Ray(origin, forward);
             return true;
         }
 

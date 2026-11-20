@@ -30,6 +30,14 @@ namespace CollarCali
     /// step between the last two poses the Animator made. Every physics step starts from the
     /// Animator's own pose again, and scripts that bend bones after Update (look-at, hand contact)
     /// work on the smoothed pose, as they would on the Animator's.
+    ///
+    /// Each step's pose is taken once Malbers' IK manager has finished bending it, which it does in an
+    /// after-step coroutine whose order against this one's is not fixed (a pose taken in our own
+    /// after-step coroutine lost the head's look-at). So it is taken at the next thing that surely
+    /// comes after: the first Update after the step, or - when one frame runs two or more steps (any
+    /// frame rate under 50, a hitch) - the next step's FixedUpdate, before that step's Animator
+    /// overwrites it. The two poses shown between are then always the same two steps the root is
+    /// shown between.
     /// </summary>
     [DefaultExecutionOrder(-500)]
     [DisallowMultipleComponent]
@@ -51,6 +59,16 @@ namespace CollarCali
         /// <summary>Set by code that drives the body itself (a ragdoll, a cutscene) to show it unsmoothed.</summary>
         public bool Suspended { get; set; }
 
+        /// <summary>
+        /// Where the body is drawn this frame: the root as smoothed between physics steps, which is where
+        /// the model's feet stand - up to a physics step behind the root itself. The root's own position
+        /// when nothing is offset (during a physics step, or with nothing to smooth).
+        /// </summary>
+        public Vector3 ShownPosition => _offset && visual != null ? transform.position + transform.rotation * _shownLocalPosition : transform.position;
+
+        /// <summary>The turn the body is drawn with this frame (see <see cref="ShownPosition"/>).</summary>
+        public Quaternion ShownRotation => _offset && visual != null ? transform.rotation * _shownLocalRotation : transform.rotation;
+
         struct Shown
         {
             public Transform Transform;
@@ -62,6 +80,11 @@ namespace CollarCali
         bool _offset;
         Animator _animator;
         Coroutine _afterPhysics;
+
+        // Where Apply drew the root, in the root's own space, so it stays right if the root is placed
+        // again later in the same frame (the visuals ride along with it). Meaningful while _offset.
+        Vector3 _shownLocalPosition;
+        Quaternion _shownLocalRotation = Quaternion.identity;
 
         bool _hasStep;
         Vector3 _previousPosition, _currentPosition;
@@ -97,7 +120,17 @@ namespace CollarCali
         void FixedUpdate()
         {
             Restore();
-            RestorePose();
+            if (_posePending)
+            {
+                // A second step in the same frame: no Update has run since the last one, so the bones
+                // still hold exactly the pose it left, with Malbers' late IK on it (its after-step
+                // coroutine is done by now). Take it before this step's Animator overwrites it;
+                // otherwise this frame would show the pose of two steps ago against the root of one
+                // step ago, a hitch in the limbs below 50 fps.
+                TakePose();
+            }
+            else
+                RestorePose();
         }
 
         void Update()
@@ -105,15 +138,22 @@ namespace CollarCali
             Restore();
             if (_posePending)
             {
-                // The Animator posed the body in the physics step, and Malbers' IK manager finishes
-                // bending it (the head's look-at) after the step, in an after-step coroutine whose order
-                // against this one's is not fixed. By the first Update after the step both are done.
-                RecordPose(_poseJumped);
-                _posePending = false;
-                _poseJumped = false;
+                // The last step of the frame. The Animator posed the body in the physics step, and
+                // Malbers' IK manager finishes bending it (the head's look-at) after the step, in an
+                // after-step coroutine whose order against this one's is not fixed. By the first Update
+                // after the step both are done.
+                TakePose();
             }
 
             Apply();
+        }
+
+        /// <summary>Takes the pose the last physics step left as the newest one.</summary>
+        void TakePose()
+        {
+            RecordPose(_poseJumped);
+            _posePending = false;
+            _poseJumped = false;
         }
 
         IEnumerator AfterPhysics()
@@ -166,6 +206,10 @@ namespace CollarCali
             var turn = shownRotation * Quaternion.Inverse(rotation);
             if ((shownPosition - position).sqrMagnitude < 1e-10f && Quaternion.Angle(turn, Quaternion.identity) < 0.001f)
                 return;
+
+            var inverse = Quaternion.Inverse(rotation);
+            _shownLocalPosition = inverse * (shownPosition - position);
+            _shownLocalRotation = inverse * shownRotation;
 
             Capture();
             for (int i = 0; i < _shown.Length; i++)

@@ -39,10 +39,14 @@ namespace CollarCali.EditorTools
     ///
     /// Batch (the Editor must be closed):
     ///   Unity -batchmode -projectPath . -executeMethod CollarCali.EditorTools.CharacterLiveCheck.RunBatch
-    ///         [-liveScene Assets/....unity] [-livePlayer Assets/....prefab] [-liveNoIK] [-livePoses] -logFile live.log
+    ///         [-liveScene Assets/....unity] [-livePlayer Assets/....prefab] [-liveNoIK] [-livePoses] [-liveStockRig]
+    ///         [-liveMovement [-liveStepsRepeat N]] -logFile live.log
     /// -livePoses ends the run with pictures of the player beside Malbers' own Steve in the same poses,
     /// and measures the hands against his (grips, the bow string, a carried crate); -livePosesOnly goes
-    /// straight to them once the player has settled.
+    /// straight to them once the player has settled. -liveStockRig puts Malbers' stock Cameras CM3 in the
+    /// floor scene too, switched off, as Game.unity keeps one: with -liveMovement the player must still
+    /// film with the team's rig and leave that one off. -liveStepsRepeat N makes -liveMovement walk up its
+    /// steps N times instead of once, to catch a rare pop of the feet sooner.
     /// Without -liveScene it plays a floor with the player and camera rig on it; with one, it plays
     /// that scene as saved and checks the player character in it. Leave out -quit: the check quits the
     /// Editor itself when it is done. Tools > CollarCali > Character > Live Check plays the open scene.
@@ -55,6 +59,7 @@ namespace CollarCali.EditorTools
         const string MenuRoot = "Tools/CollarCali/Character/";
         const string DefaultPlayer = "Assets/_Integration/Characters/Player/PlayerCharacter.prefab";
         const string DefaultRig = "Assets/_Integration/Characters/Player/PlayerCameraRig (CM3).prefab";
+        const string StockRig = "Assets/Malbers Animations/Common/Cinemachine/Cameras CM3.prefab";
 
         /// <summary>A jump that has not landed this long after the press is stuck.</summary>
         const float StuckSeconds = 5f;
@@ -64,6 +69,11 @@ namespace CollarCali.EditorTools
 
         /// <summary>Gives up on play mode altogether after this long (real seconds).</summary>
         const double WatchdogSeconds = 180;
+
+        /// <summary>The movement run holds 144 fps and walks a whole course, so it gets longer.</summary>
+        const double MovementWatchdogSeconds = 600;
+
+        static double Watchdog => _job != null && _job.movement ? MovementWatchdogSeconds : WatchdogSeconds;
 
         [Serializable]
         class Job
@@ -77,6 +87,8 @@ namespace CollarCali.EditorTools
             public bool poses;      // end with pictures beside Malbers' own Steve (-livePoses)
             public bool posesOnly;  // only those, once the player has settled (-livePosesOnly)
             public bool movement;   // only the movement measurements, once settled (-liveMovement)
+            public bool stockRig;   // Malbers' stock Cameras CM3 waits in the floor scene, switched off (-liveStockRig)
+            public int stepsRepeat; // the movement run walks up its steps this many times (-liveStepsRepeat N; once below 2)
             public string folder;
             public double requestedAt;
         }
@@ -140,6 +152,7 @@ namespace CollarCali.EditorTools
 
         public static void RunBatch()
         {
+            int.TryParse(CharacterFitCheck.ArgValue("-liveStepsRepeat"), out int stepsRepeat);
             var job = new Job
             {
                 scene = CharacterFitCheck.ArgValue("-liveScene") ?? "",
@@ -150,6 +163,10 @@ namespace CollarCali.EditorTools
                 poses = Environment.GetCommandLineArgs().Contains("-livePoses") || Environment.GetCommandLineArgs().Contains("-livePosesOnly"),
                 posesOnly = Environment.GetCommandLineArgs().Contains("-livePosesOnly"),
                 movement = Environment.GetCommandLineArgs().Contains("-liveMovement"),
+                // Only the floor scene gets the stock rig put in it (BuildFloorScene).
+                stockRig = Environment.GetCommandLineArgs().Contains("-liveStockRig") && string.IsNullOrEmpty(CharacterFitCheck.ArgValue("-liveScene")),
+                // A foot's rare pop on the steps shows sooner over several walks up them.
+                stepsRepeat = Math.Max(1, stepsRepeat),
                 batch = true,
             };
 
@@ -184,7 +201,8 @@ namespace CollarCali.EditorTools
                               : Path.GetFileNameWithoutExtension(job.scene)) +
                           (job.noIK ? "-noIK" : "") +
                           (string.IsNullOrEmpty(job.add) ? "" : "-add") +
-                          (string.IsNullOrEmpty(job.disable) ? "" : "-off");
+                          (string.IsNullOrEmpty(job.disable) ? "" : "-off") +
+                          (job.stockRig ? "-stockRig" : "");
             job.folder = CharacterFitCheck.NewReportFolder("live-" + name);
             job.requestedAt = EditorApplication.timeSinceStartup;
             _job = job;
@@ -222,6 +240,21 @@ namespace CollarCali.EditorTools
             // scene as well, as a level that already holds a rig does.
             if (player.GetComponent<ThirdPersonPlayer>() == null || Environment.GetCommandLineArgs().Contains("-liveExtraRig"))
                 PrefabUtility.InstantiatePrefab(rig);
+
+            // -liveStockRig: Malbers' own Cameras CM3 as well, switched off, as Game.unity keeps one for its
+            // offline player. The player must not film with it, nor switch it on.
+            if (Environment.GetCommandLineArgs().Contains("-liveStockRig"))
+            {
+                var stock = AssetDatabase.LoadAssetAtPath<GameObject>(StockRig);
+                if (stock == null)
+                {
+                    Debug.LogError("[LiveCheck] Missing " + StockRig);
+                    return false;
+                }
+
+                ((GameObject)PrefabUtility.InstantiatePrefab(stock)).SetActive(false);
+            }
+
             return true;
         }
 
@@ -233,9 +266,9 @@ namespace CollarCali.EditorTools
                 return;
             }
 
-            if (EditorApplication.timeSinceStartup - _job.requestedAt > WatchdogSeconds)
+            if (EditorApplication.timeSinceStartup - _job.requestedAt > Watchdog)
             {
-                Finish("Gave up: play mode did not finish the check within " + WatchdogSeconds + " s.", 2);
+                Finish("Gave up: play mode did not finish the check within " + Watchdog + " s.", 2);
                 return;
             }
 
@@ -329,6 +362,7 @@ namespace CollarCali.EditorTools
             JumpResult _jump;
             bool _held;
             int _frames;
+            int _stepFrame = -1;
             float _firstTime = -1f;
 
             class JumpResult
@@ -417,6 +451,13 @@ namespace CollarCali.EditorTools
             /// <summary>One Editor frame. True when the check is over.</summary>
             public bool Step()
             {
+                // The Editor ticks between frames of play too (its frame limiter holds them to 144 a second).
+                // Nothing has moved on such a tick, so it is neither counted nor sampled: live.csv gets one row a
+                // frame, and the report's frame count is frames of play.
+                if (Time.frameCount == _stepFrame)
+                    return false;
+                _stepFrame = Time.frameCount;
+
                 _frames++;
                 if (_firstTime < 0f)
                     _firstTime = Now;
